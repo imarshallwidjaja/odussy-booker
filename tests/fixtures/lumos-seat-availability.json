@@ -1,0 +1,9 @@
+{
+  "seatAvailabilities": [
+    { "seatId": "I-1", "status": "Available" },
+    { "seatId": "J-10", "status": "Available" },
+    { "seatId": "K-1", "status": "Sold" },
+    { "seatId": "L-2", "status": "Broken" },
+    { "seatId": "M-3", "status": "House" }
+  ]
+}

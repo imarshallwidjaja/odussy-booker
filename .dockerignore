@@ -1,0 +1,12 @@
+.git
+.hive
+node_modules
+dist
+coverage
+tests
+.env
+.env.*
+!.env.example
+*.log
+playwright-report
+test-results

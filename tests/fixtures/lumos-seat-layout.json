@@ -1,0 +1,42 @@
+{
+  "seatLayout": {
+    "areas": [
+      {
+        "rows": [
+          {
+            "number": 8,
+            "label": "I",
+            "seats": [{ "id": "I-1", "label": "1", "position": { "columnIndex": 0 } }]
+          },
+          {
+            "number": 9,
+            "label": " j ",
+            "seats": [
+              { "id": "J-10", "label": "10", "position": { "columnIndex": 9 } },
+              { "id": "J-C", "label": "Companion", "position": { "columnIndex": 10 } }
+            ]
+          },
+          {
+            "number": 10,
+            "label": "K",
+            "seats": [{ "id": "K-1", "label": "1", "position": { "columnIndex": 0 } }]
+          }
+        ]
+      },
+      {
+        "rows": [
+          {
+            "number": 11,
+            "label": "L",
+            "seats": [{ "id": "L-2", "label": "2", "position": { "columnIndex": 1 } }]
+          },
+          {
+            "number": 12,
+            "label": "M",
+            "seats": [{ "id": "M-3", "label": "3", "position": { "columnIndex": 2 } }]
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "seatLayout": {
+    "areas": [
+      {
+        "rows": [
+          {
+            "label": "J",
+            "seats": [
+              { "id": "J-unknown", "label": "Companion" }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

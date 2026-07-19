@@ -1,0 +1,17 @@
+{
+  "configuration": {
+    "languageVariantConfiguration": {
+      "en-AU": {
+        "shared": {
+          "initial": {
+            "services": {
+              "vistaConnect": {
+                "url": "https://imax-melbourne-digital-api.app.vista.co"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,46 @@
+{
+  "name": "house-lights",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "tsx --env-file-if-exists=.env watch src/server/index.ts",
+    "dev:client": "vite",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "lint": "oxlint .",
+    "build": "npm run build:server && npm run build:client",
+    "build:server": "tsc -p tsconfig.server.json",
+    "build:client": "vite build",
+    "start": "node --env-file-if-exists=.env dist/server/server/index.js"
+  },
+  "dependencies": {
+    "@fontsource-variable/archivo": "5.3.0",
+    "@fontsource/anton": "5.3.0",
+    "@fontsource/ibm-plex-mono": "5.3.0",
+    "@hono/node-server": "2.0.10",
+    "hono": "4.12.31",
+    "node-html-parser": "7.0.1",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "resend": "6.17.2",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
+    "@types/node": "^22.19.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "latest",
+    "jsdom": "^29.1.1",
+    "oxlint": "1.74.0",
+    "tsx": "latest",
+    "typescript": "7.0.2",
+    "vite": "8.1.5",
+    "vitest": "4.1.10"
+  }
+}
