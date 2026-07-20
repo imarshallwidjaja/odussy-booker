@@ -20,6 +20,7 @@ export interface DashboardFilters {
   days: Weekday[]
   time: TimeSelection
   sort: SortOrder
+  availableOnly: boolean
 }
 
 export const DEFAULT_FILTERS: DashboardFilters = {
@@ -27,6 +28,7 @@ export const DEFAULT_FILTERS: DashboardFilters = {
   days: [...weekdays],
   time: { preset: 'all' },
   sort: 'soonest',
+  availableOnly: false,
 }
 
 export const PRESENTATION_LABELS: Record<PresentationFilter, string> = {
@@ -83,8 +85,9 @@ export function parseFilters(search: string): DashboardFilters {
   }
 
   const sort: SortOrder = params.get('sort') === 'seats' ? 'seats' : 'soonest'
+  const availableOnly = params.get('available') === '1'
 
-  return { presentation, days, time, sort }
+  return { presentation, days, time, sort, availableOnly }
 }
 
 export function filtersToSearch(filters: DashboardFilters): string {
@@ -101,6 +104,7 @@ export function filtersToSearch(filters: DashboardFilters): string {
     params.set('time', filters.time.preset)
   }
   if (filters.sort !== 'soonest') params.set('sort', filters.sort)
+  if (filters.availableOnly) params.set('available', '1')
   const serialized = params.toString()
   return serialized ? `?${serialized}` : ''
 }
@@ -161,6 +165,12 @@ export function applyFilters(sessions: SessionSnapshot[], filters: DashboardFilt
   const matches = sessions.filter((session) => {
     if (filters.presentation !== 'all' && session.format !== filters.presentation) return false
     if (!selectedDays.has(weekdayInMelbourne(session.startsAt))) return false
+    if (filters.availableOnly && (
+      session.listing.status === 'soldout'
+      || session.seatData.state !== 'captured'
+      || Boolean(session.seatData.lastFailure)
+      || availableCount(session) === 0
+    )) return false
     const minute = minutesInMelbourne(session.startsAt)
     return minute >= from && minute < to
   })
@@ -272,6 +282,7 @@ export function summarizeFilters(filters: DashboardFilters): string[] {
   }
   if (filters.time.preset === 'custom') summary.push(`${filters.time.from}-${filters.time.to}`)
   else if (filters.time.preset !== 'all') summary.push(TIME_PRESET_LABELS[filters.time.preset])
+  if (filters.availableOnly) summary.push('Available J-M seats')
   if (filters.sort !== 'soonest') summary.push('Most seats')
   return summary
 }

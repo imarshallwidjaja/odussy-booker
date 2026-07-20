@@ -93,6 +93,7 @@ describe('URL filter state', () => {
       days: ['monday', 'wednesday', 'friday'],
       time: { preset: 'custom', from: '09:30', to: '12:45' },
       sort: 'seats',
+      availableOnly: true,
     }
     const search = filtersToSearch(filters)
     expect(search).toContain('format=laser')
@@ -101,6 +102,7 @@ describe('URL filter state', () => {
     expect(search).toContain('from=09%3A30')
     expect(search).toContain('to=12%3A45')
     expect(search).toContain('sort=seats')
+    expect(search).toContain('available=1')
     expect(parseFilters(search)).toEqual(filters)
   })
 
@@ -172,6 +174,41 @@ describe('session filtering and sorting', () => {
     expect(soonest.map(({ id }) => id)).toEqual(['session-3', 'session-2', 'session-1'])
     const mostSeats = applyFilters(all, { ...DEFAULT_FILTERS, sort: 'seats' })
     expect(mostSeats.map(({ id }) => id)).toEqual(['session-3', 'session-1', 'session-2'])
+  })
+
+  it('filters to sessions with at least one available J-M seat', () => {
+    const noAvailability = makeSession({
+      id: 'session-4',
+      seats: seats([]),
+    })
+    const uncaptured = makeSession({
+      id: 'session-5',
+      seats: [],
+      seatData: { state: 'unavailable', capturedAt: null },
+    })
+    const lastKnown = makeSession({
+      id: 'session-6',
+      seatData: { state: 'last_known', capturedAt: '2026-07-19T12:00:00.000Z' },
+    })
+    const soldOut = makeSession({
+      id: 'session-7',
+      listing: { status: 'soldout', observedAt: '2026-07-19T12:00:00.000Z', sourceId: null },
+    })
+    const failedRefresh = makeSession({
+      id: 'session-8',
+      seatData: {
+        state: 'captured',
+        capturedAt: '2026-07-19T12:00:00.000Z',
+        lastFailure: { at: '2026-07-19T12:05:00.000Z', kind: 'error', detail: 'Preview failed' },
+      },
+    })
+
+    const result = applyFilters(
+      [noAvailability, laserMondayEvening, uncaptured, lastKnown, soldOut, failedRefresh],
+      { ...DEFAULT_FILTERS, availableOnly: true } as DashboardFilters,
+    )
+
+    expect(result.map(({ id }) => id)).toEqual(['session-1'])
   })
 
   it('shows nothing when no days are selected', () => {
@@ -361,6 +398,24 @@ describe('dashboard controls', () => {
     expect(markup).not.toContain('<details class="filters" open="">')
   })
 
+  it('offers an available J-M seats only filter', async () => {
+    const user = userEvent.setup()
+    function Harness() {
+      const [filters, setFilters] = useState(DEFAULT_FILTERS)
+      return createElement(FiltersPanel, {
+        filters,
+        onChange: setFilters,
+        onReset: () => setFilters(DEFAULT_FILTERS),
+      })
+    }
+    renderClient(createElement(Harness))
+
+    await user.click(screen.getByLabelText('Available J-M seats only'))
+
+    expect(screen.getByLabelText('Available J-M seats only')).toHaveProperty('checked', true)
+    expect(screen.getByText('1 active')).toBeTruthy()
+  })
+
   it('names alert fields for browser autofill and form semantics', () => {
     const markup = renderToStaticMarkup(createElement(AlertDialog, {
       open: true,
@@ -438,6 +493,7 @@ describe('dashboard controls', () => {
         days: ['friday', 'saturday'],
         time: { preset: 'custom', from: '13:00', to: '16:30' },
         sort: 'seats',
+        availableOnly: false,
       },
       configuredFilmIds: ['HO00000546', 'HO00000547'],
       emailConfigured: true,
@@ -576,6 +632,16 @@ describe('dashboard behavior', () => {
     expect(container.querySelectorAll('.session-selected')).toHaveLength(1)
   })
 
+  it('labels result totals as listed sessions rather than exact-seat captures', async () => {
+    mockDashboard([
+      makeSession({ id: 'first' }),
+      makeSession({ id: 'second', startsAt: '2026-07-20T10:00:00.000Z' }),
+    ])
+    renderClient(createElement(App))
+
+    expect(await screen.findByText('2 of 2 listed sessions matching')).toBeTruthy()
+  })
+
   it('replaces stale session state after filtering and popstate navigation', async () => {
     history.replaceState(null, '', '/?session=first')
     const sessions = [
@@ -611,6 +677,7 @@ describe('dashboard behavior', () => {
     renderClient(createElement(App))
 
     expect(await screen.findByText('J-M PARTIAL')).toBeTruthy()
+    expect(screen.getByText('Exact J-M preview coverage is partial.')).toBeTruthy()
     expect(screen.getByText('LIVE SESSIONS')).toBeTruthy()
     const skip = screen.getByRole('link', { name: 'Skip to sessions' })
     expect(document.querySelector('a, button, input, select, textarea, [tabindex]')).toBe(skip)
@@ -649,6 +716,7 @@ describe('alert filter inheritance', () => {
       days: ['friday', 'saturday'],
       time: { preset: 'custom', from: '13:00', to: '16:30' },
       sort: 'seats',
+      availableOnly: false,
     }
     expect(alertFiltersFromDashboard(filters, configured, { minimumSeats: 4, adjacentOnly: false }))
       .toEqual({
@@ -686,7 +754,8 @@ describe('freshness and summary text', () => {
       days: ['saturday', 'sunday'],
       time: { preset: 'custom', from: '13:00', to: '16:30' },
       sort: 'seats',
-    })).toEqual(['IMAX 70mm Film', 'Weekends', '13:00-16:30', 'Most seats'])
+      availableOnly: true,
+    })).toEqual(['IMAX 70mm Film', 'Weekends', '13:00-16:30', 'Available J-M seats', 'Most seats'])
     expect(summarizeFilters({ ...DEFAULT_FILTERS, days: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday'] }))
       .toEqual(['Weekdays'])
     expect(summarizeFilters({ ...DEFAULT_FILTERS, days: [] })).toEqual(['No days selected'])

@@ -165,14 +165,15 @@ export class MemoryStore {
 
   getStatus(): AppStatus {
     const sessions = [...this.sessions.values()]
-    const capturedSessionCount = sessions
+    const nonSoldOutSessions = sessions.filter(({ listing }) => listing.status !== 'soldout')
+    const capturedSessionCount = nonSoldOutSessions
       .filter(({ seatData }) => seatData.state === 'captured').length
-    const lastKnownSessionCount = sessions
+    const lastKnownSessionCount = nonSoldOutSessions
       .filter(({ seatData }) => seatData.state === 'last_known').length
-    const uncapturedSessionCount = sessions
+    const uncapturedSessionCount = nonSoldOutSessions
       .filter(({ seatData }) => seatData.state === 'unavailable').length
-    const failedSessionCount = sessions.filter(({ seatData }) => seatData.lastFailure).length
-    const lastCapture = sessions
+    const failedSessionCount = nonSoldOutSessions.filter(({ seatData }) => seatData.lastFailure).length
+    const lastCapture = nonSoldOutSessions
       .map(({ seatData }) => seatData.capturedAt)
       .filter((value): value is string => value !== null)
       .sort()

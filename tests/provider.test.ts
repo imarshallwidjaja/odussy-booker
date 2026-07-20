@@ -315,6 +315,34 @@ describe('Lumos read-only seat preview provider', () => {
     ])
   })
 
+  it('excludes wheelchair and companion seats from standard availability', async () => {
+    const { layout, availability } = await lumosFixtures()
+    const restrictedLayout = JSON.parse(layout)
+    restrictedLayout.seatLayout.areas[0].rows[1].seats[0].type = 'Wheelchair'
+    restrictedLayout.seatLayout.areas[0].rows[1].seats[1].type = 'Companion'
+    const restrictedAvailability = JSON.parse(availability)
+    restrictedAvailability.seatAvailabilities.push({ seatId: 'J-C', status: 'Available' })
+
+    expect(normalizeLumosSeats(restrictedLayout, restrictedAvailability)).toEqual([
+      { row: 'K', number: 1, status: 'sold' },
+      { row: 'L', number: 2, status: 'held' },
+      { row: 'M', number: 3, status: 'held' },
+    ])
+  })
+
+  it('captures an empty standard-seat map when every J-M seat is restricted', async () => {
+    const { layout, availability } = await lumosFixtures()
+    const restrictedLayout = JSON.parse(layout)
+    const targetRows = restrictedLayout.seatLayout.areas
+      .flatMap((area: { rows: Array<{ label: string; seats: Array<Record<string, unknown>> }> }) => area.rows)
+      .filter((row: { label: string }) => ['J', 'K', 'L', 'M'].includes(row.label.trim().toUpperCase()))
+    for (const row of targetRows) {
+      for (const seat of row.seats) seat.type = 'Wheelchair'
+    }
+
+    expect(normalizeLumosSeats(restrictedLayout, JSON.parse(availability))).toEqual([])
+  })
+
   it('fails malformed duplicate seat IDs and row-number collisions', async () => {
     const { layout, availability } = await lumosFixtures()
     const duplicateId = JSON.parse(layout)

@@ -202,7 +202,80 @@ describe('MemoryStore ingest pipeline', () => {
     expect(second).toMatchObject({ transitions: [], deliveries: [] })
     expect(store.getStatus()).toMatchObject({
       transitionCount: 0,
-      seatCapture: { state: 'pending', capturedSessionCount: 0, uncapturedSessionCount: 1 },
+      seatCapture: { state: 'pending', capturedSessionCount: 0, uncapturedSessionCount: 0 },
+    })
+  })
+
+  it('does not classify sold-out sessions without a showtime ID as missing exact previews', () => {
+    const store = new MemoryStore({ filmIds: [filmId] })
+    const active = session([], {
+      id: 'active-session',
+      listing: { status: 'available', observedAt: '2026-07-18T01:00:00.000Z', sourceId: 'IMAX-1' },
+      seatData: { state: 'unavailable', capturedAt: null },
+    })
+    const soldOut = session([], {
+      id: 'sold-out-session',
+      startsAt: '2026-07-18T10:00:00.000Z',
+      bookingUrl: null,
+      listing: { status: 'soldout', observedAt: '2026-07-18T01:00:00.000Z', sourceId: null },
+      seatData: { state: 'unavailable', capturedAt: null },
+    })
+    store.ingest([active, soldOut], 'provider', 'listing')
+    store.ingest([{
+      ...active,
+      seatData: { state: 'captured', capturedAt: '2026-07-18T02:00:00.000Z' },
+      seats: [{ row: 'J', number: 10, status: 'sold' }],
+    }], 'preview', 'preview')
+    store.setSeatCaptureStatus('fresh', 'Exact Lumos preview captured 1 session(s).', {
+      attemptedAt: '2026-07-18T02:00:00.000Z',
+      nextAttempt: null,
+    })
+
+    expect(store.getStatus()).toMatchObject({
+      sessionCount: 2,
+      seatCapture: {
+        state: 'fresh',
+        capturedSessionCount: 1,
+        lastKnownSessionCount: 0,
+        uncapturedSessionCount: 0,
+      },
+    })
+  })
+
+  it('does not classify retained seats as last-known coverage after the session sells out', () => {
+    const store = new MemoryStore({ filmIds: [filmId] })
+    const listing = session([], {
+      id: 'active-session',
+      listing: { status: 'available', observedAt: '2026-07-18T01:00:00.000Z', sourceId: 'IMAX-1' },
+      seatData: { state: 'unavailable', capturedAt: null },
+    })
+    store.ingest([listing], 'provider', 'listing-1')
+    store.ingest([{
+      ...listing,
+      seatData: { state: 'captured', capturedAt: '2026-07-18T02:00:00.000Z' },
+      seats: [{ row: 'J', number: 10, status: 'available' }],
+    }], 'preview', 'preview')
+    store.setSeatCaptureStatus('fresh', 'Exact Lumos preview captured 1 session(s).', {
+      attemptedAt: '2026-07-18T02:00:00.000Z',
+      nextAttempt: null,
+    })
+
+    store.ingest([{
+      ...listing,
+      bookingUrl: null,
+      listing: { status: 'soldout', observedAt: '2026-07-18T03:00:00.000Z', sourceId: null },
+    }], 'provider', 'listing-2')
+
+    expect(store.getSessions()[0]).toMatchObject({
+      listing: { status: 'soldout', sourceId: null },
+      seatData: { state: 'last_known' },
+      seats: [{ row: 'J', number: 10, status: 'available' }],
+    })
+    expect(store.getStatus().seatCapture).toMatchObject({
+      state: 'fresh',
+      capturedSessionCount: 0,
+      lastKnownSessionCount: 0,
+      uncapturedSessionCount: 0,
     })
   })
 

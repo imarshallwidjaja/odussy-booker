@@ -156,6 +156,20 @@ export function FiltersPanel({ filters, onChange, onReset }: FiltersPanelProps) 
         </fieldset>
 
         <fieldset className="filter-group">
+          <legend>Availability</legend>
+          <div className="chips">
+            <label className="chip">
+              <input
+                type="checkbox"
+                checked={filters.availableOnly}
+                onChange={(event) => onChange({ ...filters, availableOnly: event.target.checked })}
+              />
+              <span>Available J-M seats only</span>
+            </label>
+          </div>
+        </fieldset>
+
+        <fieldset className="filter-group">
           <legend>Sort</legend>
           <div className="chips" role="radiogroup" aria-label="Sort order">
             {SORTS.map(({ value, label }) => (
@@ -183,7 +197,7 @@ export function FiltersPanel({ filters, onChange, onReset }: FiltersPanelProps) 
                 <button type="button" className="text-button" onClick={onReset}>Reset filters</button>
               </>
             )
-            : <p className="filter-hint">Showing every captured session. Narrow by presentation, day, or time.</p>}
+            : <p className="filter-hint">Showing every listed session. Narrow by presentation, day, time, or availability.</p>}
         </div>
       </div>
     </details>

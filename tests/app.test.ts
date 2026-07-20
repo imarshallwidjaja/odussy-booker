@@ -124,7 +124,7 @@ describe('Hono API', () => {
       degraded: true,
       sessionDiscovery: { state: 'ok', freshness: { state: 'fresh' } },
       lumosBootstrap: { state: 'blocked' },
-      seatCapture: { state: 'blocked', capturedSessionCount: 0, uncapturedSessionCount: 1 },
+      seatCapture: { state: 'blocked', capturedSessionCount: 0, uncapturedSessionCount: 0 },
     })
     expect(sessions).toMatchObject({
       sessions: [{

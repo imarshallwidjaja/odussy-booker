@@ -14,6 +14,7 @@ const JSON_BODY_LIMIT = 2_000_000
 const CMS_CONFIGURATION_PATH = '/api/v1/sales-channels/web/configuration'
 const LAYOUT_PATH = /^\/ocapi\/v1\/showtimes\/IMAX-[0-9]+\/seat-layout$/
 const AVAILABILITY_PATH = /^\/ocapi\/v1\/showtimes\/IMAX-[0-9]+\/seat-availability$/
+const RESTRICTED_SEAT_TYPES = new Set(['Wheelchair', 'Companion'])
 
 type PreviewResultKind = 'ok' | 'blocked' | 'error'
 
@@ -272,6 +273,7 @@ export function normalizeLumosSeats(layoutPayload: unknown, availabilityPayload:
   const seenIds = new Set<string>()
   const seenSeats = new Set<string>()
   const seats: SeatSnapshot[] = []
+  let hasTargetRows = false
   for (const areaValue of areas) {
     const area = requireRecord(areaValue, 'Lumos seat layout area is malformed')
     const rows = requireArray(area.rows, 'Lumos seat layout rows are missing')
@@ -280,12 +282,14 @@ export function normalizeLumosSeats(layoutPayload: unknown, availabilityPayload:
       if (typeof row.label !== 'string') throw new Error('Lumos seat row label is missing')
       const label = row.label.trim().toUpperCase()
       if (!seatRows.includes(label as SeatRow)) continue
+      hasTargetRows = true
       const rowSeats = requireArray(row.seats, `Lumos row ${label} seats are missing`)
       for (const seatValue of rowSeats) {
         const seat = requireRecord(seatValue, `Lumos row ${label} seat is malformed`)
         if (typeof seat.id !== 'string' || !seat.id.trim()) throw new Error(`Lumos row ${label} seat ID is missing`)
         if (seenIds.has(seat.id)) throw new Error(`Duplicate seat ID ${seat.id}`)
         seenIds.add(seat.id)
+        if (typeof seat.type === 'string' && RESTRICTED_SEAT_TYPES.has(seat.type)) continue
         const number = physicalSeatNumber(seat)
         const key = `${label}-${number}`
         if (seenSeats.has(key)) throw new Error(`Duplicate seat ${key}`)
@@ -300,7 +304,7 @@ export function normalizeLumosSeats(layoutPayload: unknown, availabilityPayload:
       }
     }
   }
-  if (seats.length === 0) throw new Error('Lumos seat layout contains no Rows J-M seats')
+  if (!hasTargetRows) throw new Error('Lumos seat layout contains no Rows J-M seats')
   return seats.toSorted((a, b) => seatRows.indexOf(a.row) - seatRows.indexOf(b.row) || a.number - b.number)
 }
 

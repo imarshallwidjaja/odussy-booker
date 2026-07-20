@@ -246,7 +246,7 @@ export function App() {
         {!status?.sampleData && discoveryState === 'ok' && seatCaptureState === 'partial'
           ? (
             <div className="notice" role="note">
-              <strong>Some exact J-M previews are last-known.</strong>{' '}
+              <strong>Exact J-M preview coverage is partial.</strong>{' '}
               {status?.seatCapture.detail}
             </div>
           )
@@ -283,7 +283,7 @@ export function App() {
         <div className="results-bar">
           <h2>Sessions</h2>
           <p aria-live="polite">
-            {loading ? 'Loading…' : `${filtered.length} of ${sessions.length} matching`}
+            {loading ? 'Loading…' : `${filtered.length} of ${sessions.length} listed sessions matching`}
           </p>
         </div>
 
@@ -312,7 +312,7 @@ export function App() {
               ? (
                 <div className="empty-state">
                   <h3>No sessions match these filters</h3>
-                  <p>Widen the day or time selection, or reset to see every captured session.</p>
+                  <p>Widen the day, time, or availability selection, or reset to see every listed session.</p>
                   <button type="button" className="ghost-button" onClick={() => setFilters(DEFAULT_FILTERS)}>
                     Reset filters
                   </button>
