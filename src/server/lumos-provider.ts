@@ -147,9 +147,20 @@ export function extractLumosBootstrap(html: string): BootstrapData {
   const props = requireRecord(requireRecord(data, 'Lumos bootstrap data is malformed').props, 'Lumos bootstrap props are missing')
   const pageProps = requireRecord(props.pageProps, 'Lumos bootstrap page props are missing')
   const environment = requireRecord(pageProps.environment, 'Lumos bootstrap environment is missing')
-  const cmsConfig = requireRecord(pageProps.cmsConfig, 'Lumos bootstrap CMS configuration is missing')
   if (typeof environment.gasToken !== 'string' || environment.gasToken.length === 0) {
     throw new Error('Lumos bootstrap bearer token is missing')
+  }
+  let cmsConfig: Record<string, unknown>
+  let expiresAt: number
+  try {
+    expiresAt = decodeTokenExpiry(environment.gasToken)
+  } catch {
+    throw new Error('Lumos bootstrap bearer token is malformed')
+  }
+  try {
+    cmsConfig = requireRecord(pageProps.cmsConfig, 'Lumos bootstrap CMS configuration is missing')
+  } catch {
+    cmsConfig = requireRecord(environment.cmsConfig, 'Lumos bootstrap CMS configuration is missing in environment')
   }
   if (typeof cmsConfig.apiUrl !== 'string' || cmsConfig.apiUrl.length === 0) {
     throw new Error('Lumos bootstrap CMS API URL is missing')
@@ -157,7 +168,7 @@ export function extractLumosBootstrap(html: string): BootstrapData {
   return {
     gasToken: environment.gasToken,
     cmsApiUrl: cmsConfig.apiUrl,
-    expiresAt: decodeTokenExpiry(environment.gasToken),
+    expiresAt,
   }
 }
 
