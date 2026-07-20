@@ -3,6 +3,7 @@ import { isIP } from 'node:net'
 import { parse } from 'node-html-parser'
 
 import { seatRows, type SeatRow, type SeatSnapshot, type SessionSnapshot } from '../domain/types.js'
+import type { ProtectedPreviewPayload } from './cf-clearance.js'
 import { readBoundedText } from './http.js'
 
 const USER_AGENT = 'HouseLights/0.1 (+https://github.com/imarshallwidjaja/odussy-booker)'
@@ -43,6 +44,11 @@ interface LumosPreviewSeatProviderOptions {
   filmUrl: string
   allowedHosts?: string[]
   fetchImpl?: typeof fetch
+  fetchProtectedPreviews?: (
+    url: string,
+    showtimeIds: string[],
+    signal: AbortSignal,
+  ) => Promise<ProtectedPreviewPayload[] | null>
   now?: () => Date
   concurrency?: number
   sessionBudget?: number
@@ -317,6 +323,7 @@ export class LumosPreviewSeatProvider implements SeatPreviewProvider {
   private readonly filmUrl: string
   private readonly allowedHosts: string[]
   private readonly fetchImpl: typeof fetch
+  private readonly fetchProtectedPreviews?: LumosPreviewSeatProviderOptions['fetchProtectedPreviews']
   private readonly now: () => Date
   private readonly concurrency: number
   private readonly sessionBudget: number
@@ -332,6 +339,7 @@ export class LumosPreviewSeatProvider implements SeatPreviewProvider {
     this.allowedHosts = options.allowedHosts ?? DEFAULT_ALLOWED_HOSTS
     this.filmUrl = validateLumosServiceUrl(options.filmUrl, this.allowedHosts).href.replace(/\/$/, '')
     this.fetchImpl = options.fetchImpl ?? fetch
+    this.fetchProtectedPreviews = options.fetchProtectedPreviews
     this.now = options.now ?? (() => new Date())
     this.concurrency = options.concurrency ?? 2
     this.sessionBudget = options.sessionBudget ?? 12
@@ -380,6 +388,10 @@ export class LumosPreviewSeatProvider implements SeatPreviewProvider {
       await this.getBootstrap(signal)
     } catch (error) {
       const failure = safeFailure(error)
+      if (failure.kind === 'blocked') {
+        const protectedResult = await this.buildProtectedResult(selected, attemptedAt, eligible.length, signal)
+        if (protectedResult) return protectedResult
+      }
       return {
         kind: failure.kind,
         bootstrap: failure.kind,
@@ -427,6 +439,10 @@ export class LumosPreviewSeatProvider implements SeatPreviewProvider {
     observations.sort((a, b) => a.startsAt.localeCompare(b.startsAt))
     failures.sort((a, b) => a.sessionId.localeCompare(b.sessionId))
     const blockedFailure = failures.find(({ kind }) => kind === 'blocked')
+    if (blockedFailure) {
+      const protectedResult = await this.buildProtectedResult(selected, attemptedAt, eligible.length, signal, observations)
+      if (protectedResult) return protectedResult
+    }
     const kind = blockedFailure ? 'blocked' : observations.length === 0 && failures.length > 0 ? 'error' : 'ok'
     const detail = blockedFailure
       ? blockedFailure.detail
@@ -443,6 +459,89 @@ export class LumosPreviewSeatProvider implements SeatPreviewProvider {
       eligibleSessionCount: eligible.length,
       attemptedSessionCount: observations.length + failures.length,
       ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
+    }
+  }
+
+  private async buildProtectedResult(
+    selected: SessionSnapshot[],
+    attemptedAt: string,
+    eligibleSessionCount: number,
+    signal: AbortSignal,
+    directObservations: SessionSnapshot[] = [],
+  ): Promise<SeatPreviewResult | null> {
+    if (!this.fetchProtectedPreviews) return null
+    const directBySessionId = new Map(directObservations.map((observation) => [observation.id, observation]))
+    const unresolved = selected.filter((session) => !directBySessionId.has(session.id))
+    const showtimeIds = [...new Set(unresolved.map((session) => {
+      const showtimeId = session.listing.sourceId
+      if (!showtimeId || !SHOWTIME_ID.test(showtimeId)) throw new Error('Lumos showtime ID is invalid')
+      return showtimeId
+    }))]
+    const payloads = await this.fetchProtectedPreviews(this.filmUrl, showtimeIds, signal)
+    if (!payloads) return null
+
+    const selectedIds = new Set(showtimeIds)
+    const byShowtimeId = new Map<string, ProtectedPreviewPayload>()
+    const duplicateIds = new Set<string>()
+    for (const payload of payloads) {
+      if (!isRecord(payload) || typeof payload.showtimeId !== 'string') continue
+      const showtimeId = payload.showtimeId
+      if (!selectedIds.has(showtimeId) || duplicateIds.has(showtimeId)) continue
+      if (byShowtimeId.has(showtimeId)) {
+        byShowtimeId.delete(showtimeId)
+        duplicateIds.add(showtimeId)
+        continue
+      }
+      byShowtimeId.set(showtimeId, {
+        showtimeId,
+        layout: payload.layout,
+        availability: payload.availability,
+      })
+    }
+
+    const observations: SessionSnapshot[] = []
+    const failures: SeatPreviewFailure[] = []
+    for (const session of selected) {
+      const directObservation = directBySessionId.get(session.id)
+      if (directObservation) {
+        observations.push(directObservation)
+        continue
+      }
+      const showtimeId = session.listing.sourceId as string
+      const payload = byShowtimeId.get(showtimeId)
+      if (!payload) {
+        failures.push({
+          sessionId: session.id,
+          attemptedAt,
+          kind: 'error',
+          detail: 'Protected preview returned no seat payload for this session',
+        })
+        continue
+      }
+      try {
+        observations.push({
+          ...structuredClone(session),
+          seatData: { state: 'captured', capturedAt: attemptedAt },
+          seats: normalizeLumosSeats(payload.layout, payload.availability),
+        })
+      } catch (error) {
+        const failure = safeFailure(error)
+        failures.push({ sessionId: session.id, attemptedAt, kind: failure.kind, detail: failure.message })
+      }
+    }
+    observations.sort((a, b) => a.startsAt.localeCompare(b.startsAt))
+    failures.sort((a, b) => a.sessionId.localeCompare(b.sessionId))
+    return {
+      kind: observations.length === 0 && failures.length > 0 ? 'error' : 'ok',
+      bootstrap: 'ready',
+      detail: failures.length > 0
+        ? `Protected Lumos preview captured ${observations.length} session(s); ${failures.length} failed.`
+        : `Protected Lumos preview captured ${observations.length} session(s).`,
+      observations,
+      failures,
+      attemptedAt,
+      eligibleSessionCount,
+      attemptedSessionCount: selected.length,
     }
   }
 

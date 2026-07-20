@@ -18,7 +18,6 @@ interface AppOptions {
   store: MemoryStore
   email: EmailSender
   cfClearance?: CfClearanceManager
-  filmUrl?: string
   ingestToken?: string
   staticRoot?: string
   staleAfterMs?: number
@@ -297,8 +296,8 @@ export function createApp(options: AppOptions): Hono {
     unsubscribed ? 200 : 404)
   })
 
-  if (options.cfClearance && options.filmUrl) {
-    const cfRoutes = createCfClearanceRoutes({ manager: options.cfClearance, filmUrl: options.filmUrl })
+  if (options.cfClearance) {
+    const cfRoutes = createCfClearanceRoutes({ manager: options.cfClearance })
     app.route('/api/cf-clearance', cfRoutes)
   }
 

@@ -13,6 +13,7 @@ import {
   normalizeLumosSeats,
   validateLumosServiceUrl,
 } from '../src/server/lumos-provider.js'
+import { CfClearanceManager, resolveProtectedPreviewTimeoutMs } from '../src/server/cf-clearance.js'
 import type { SessionSnapshot } from '../src/domain/types.js'
 
 const fixtureUrl = new URL('./fixtures/imax-movie-sessions.html', import.meta.url)
@@ -220,6 +221,13 @@ describe('IMAX Melbourne public listing provider', () => {
 })
 
 describe('Lumos read-only seat preview provider', () => {
+  it('reserves cleanup headroom between protected and scheduler deadlines', () => {
+    expect(resolveProtectedPreviewTimeoutMs(60_000)).toBe(50_000)
+    expect(resolveProtectedPreviewTimeoutMs(5_001)).toBe(1)
+    expect(() => resolveProtectedPreviewTimeoutMs(5_000)).toThrow(/greater than 5000/i)
+    expect(() => resolveProtectedPreviewTimeoutMs(5_000.5)).toThrow(/integer/i)
+  })
+
   it('strictly extracts the guest bootstrap and rejects challenge HTML', async () => {
     const { film } = await lumosFixtures()
 
@@ -384,6 +392,235 @@ describe('Lumos read-only seat preview provider', () => {
     expect(requests.every(({ url }) => !url.includes('/orders'))).toBe(true)
     expect(requests.slice(1).every(({ authorization }) => authorization?.startsWith('Bearer '))).toBe(true)
     expect(requests.slice(1).every(({ accept }) => accept === 'application/json')).toBe(true)
+  })
+
+  it('uses a protected browser batch when the direct film request is blocked', async () => {
+    const fixtures = await lumosFixtures()
+    const requests: string[] = []
+    const fallbackRequests: string[] = []
+    const access = new CfClearanceManager({
+      runAcquire: async (url, signal, showtimeIds) => {
+        fallbackRequests.push(url)
+        expect(signal?.aborted).toBe(false)
+        expect(showtimeIds).toEqual(['IMAX-22854'])
+        return {
+          success: true,
+          status: 200,
+          previews: [{
+            showtime_id: 'IMAX-22854',
+            layout: JSON.parse(fixtures.layout),
+            availability: JSON.parse(fixtures.availability),
+          }],
+        }
+      },
+    })
+    const fetchImpl: typeof fetch = async (input) => {
+      const url = String(input)
+      requests.push(url)
+      if (url === publicFilmUrl) {
+        return new Response('blocked', { status: 403, headers: { 'cf-ray': 'fixture-ray' } })
+      }
+      throw new Error(`Unexpected request ${url}`)
+    }
+    const provider = new LumosPreviewSeatProvider({
+      filmUrl: publicFilmUrl,
+      fetchImpl,
+      fetchProtectedPreviews: (url, showtimeIds, signal) => access.fetchProtectedPreviews(url, showtimeIds, signal),
+      now: () => new Date('2026-07-20T00:00:00.000Z'),
+      concurrency: 1,
+      sessionBudget: 1,
+    })
+
+    const result = await provider.fetchSeatPreviews([linkedSession()], new AbortController().signal)
+
+    expect(result).toMatchObject({
+      kind: 'ok',
+      bootstrap: 'ready',
+      failures: [],
+      observations: [{ id: 'HO00000547-20260721T1900' }],
+    })
+    expect(fallbackRequests).toEqual([publicFilmUrl])
+    expect(access.state).toBe('succeeded')
+    expect(access.detail).toMatch(/preview/i)
+    expect(requests).toEqual([publicFilmUrl])
+  })
+
+  it('preserves direct observations when a protected batch is partial', async () => {
+    const fixtures = await lumosFixtures()
+    const protectedAvailability = JSON.parse(fixtures.availability) as {
+      seatAvailabilities: Array<{ seatId: string; status: string }>
+    }
+    protectedAvailability.seatAvailabilities.find(({ seatId }) => seatId === 'J-10')!.status = 'Sold'
+    const sessions = [
+      linkedSession(),
+      linkedSession({
+        id: 'HO00000547-20260722T1900',
+        startsAt: '2026-07-22T09:00:00.000Z',
+        listing: { ...linkedSession().listing, sourceId: 'IMAX-22855' },
+      }),
+    ]
+    const provider = new LumosPreviewSeatProvider({
+      filmUrl: publicFilmUrl,
+      fetchImpl: async (input) => {
+        const url = String(input)
+        if (url === publicFilmUrl) return new Response(fixtures.film)
+        if (url.includes('/configuration')) return Response.json(JSON.parse(fixtures.cms))
+        if (url.includes('IMAX-22855')) {
+          return new Response('blocked', { status: 403, headers: { 'cf-ray': 'fixture-ray' } })
+        }
+        if (url.endsWith('/seat-layout')) return Response.json(JSON.parse(fixtures.layout))
+        return Response.json(JSON.parse(fixtures.availability))
+      },
+      fetchProtectedPreviews: async (_url, showtimeIds) => {
+        expect(showtimeIds).toEqual(['IMAX-22855'])
+        return [
+          {
+            showtimeId: 'IMAX-22854',
+            layout: JSON.parse(fixtures.layout),
+            availability: protectedAvailability,
+          },
+          {
+            showtimeId: 'IMAX-22855',
+            layout: JSON.parse(fixtures.layout),
+            availability: protectedAvailability,
+          },
+        ]
+      },
+      now: () => new Date('2026-07-20T00:00:00.000Z'),
+      concurrency: 1,
+      sessionBudget: 2,
+    })
+
+    const result = await provider.fetchSeatPreviews(sessions, new AbortController().signal)
+
+    expect(result).toMatchObject({ kind: 'ok', failures: [], attemptedSessionCount: 2 })
+    expect(result.observations.map(({ id }) => id)).toEqual(sessions.map(({ id }) => id))
+    expect(result.observations[0]?.seats.find(({ row, number }) => row === 'J' && number === 10)?.status)
+      .toBe('available')
+    expect(result.observations[1]?.seats.find(({ row, number }) => row === 'J' && number === 10)?.status)
+      .toBe('sold')
+  })
+
+  it('returns direct partial observations before the protected fallback deadline', async () => {
+    const fixtures = await lumosFixtures()
+    const access = new CfClearanceManager({
+      timeoutMs: 5,
+      runAcquire: async () => new Promise((resolve) => {
+        setTimeout(() => resolve({
+          success: true,
+          previews: [{
+            showtime_id: 'IMAX-22855',
+            layout: JSON.parse(fixtures.layout),
+            availability: JSON.parse(fixtures.availability),
+          }],
+        }), 20)
+      }),
+    })
+    const provider = new LumosPreviewSeatProvider({
+      filmUrl: publicFilmUrl,
+      fetchImpl: async (input) => {
+        const url = String(input)
+        if (url === publicFilmUrl) return new Response(fixtures.film)
+        if (url.includes('/configuration')) return Response.json(JSON.parse(fixtures.cms))
+        if (url.includes('IMAX-22855')) return new Response('blocked', { status: 403 })
+        if (url.endsWith('/seat-layout')) return Response.json(JSON.parse(fixtures.layout))
+        return Response.json(JSON.parse(fixtures.availability))
+      },
+      fetchProtectedPreviews: (url, showtimeIds, signal) => (
+        access.fetchProtectedPreviews(url, showtimeIds, signal)
+      ),
+      now: () => new Date('2026-07-20T00:00:00.000Z'),
+      concurrency: 1,
+      sessionBudget: 2,
+    })
+    const sessions = [
+      linkedSession(),
+      linkedSession({
+        id: 'HO00000547-20260722T1900',
+        startsAt: '2026-07-22T09:00:00.000Z',
+        listing: { ...linkedSession().listing, sourceId: 'IMAX-22855' },
+      }),
+    ]
+
+    const result = await provider.fetchSeatPreviews(sessions, new AbortController().signal)
+
+    expect(result).toMatchObject({
+      kind: 'blocked',
+      observations: [{ id: sessions[0]?.id }],
+      failures: [{ sessionId: sessions[1]?.id, kind: 'blocked' }],
+    })
+    await new Promise((resolve) => setTimeout(resolve, 25))
+    expect(access.state).toBe('failed')
+  })
+
+  it('fails an unresolved session safely when protected payloads are duplicated', async () => {
+    const fixtures = await lumosFixtures()
+    const payload = {
+      showtimeId: 'IMAX-22854',
+      layout: JSON.parse(fixtures.layout),
+      availability: JSON.parse(fixtures.availability),
+    }
+    const provider = new LumosPreviewSeatProvider({
+      filmUrl: publicFilmUrl,
+      fetchImpl: async () => new Response('blocked', { status: 403 }),
+      fetchProtectedPreviews: async () => [payload, payload],
+      now: () => new Date('2026-07-20T00:00:00.000Z'),
+    })
+
+    const result = await provider.fetchSeatPreviews([linkedSession()], new AbortController().signal)
+
+    expect(result).toMatchObject({
+      kind: 'error',
+      observations: [],
+      failures: [{ sessionId: linkedSession().id, kind: 'error' }],
+    })
+  })
+
+  it('does not expose protected helper errors through public status detail', async () => {
+    const access = new CfClearanceManager({
+      runAcquire: async () => {
+        throw new Error('Proxy http://user:super-secret@gate.nodemaven.com failed')
+      },
+    })
+
+    const result = await access.fetchProtectedPreviews(
+      publicFilmUrl,
+      ['IMAX-22854'],
+      new AbortController().signal,
+    )
+
+    expect(result).toBeNull()
+    expect(access.state).toBe('failed')
+    expect(access.detail).toBe('Protected exact-seat preview failed.')
+    expect(access.detail).not.toContain('super-secret')
+  })
+
+  it('does not report success for duplicated or unexpected helper payloads', async () => {
+    const fixtures = await lumosFixtures()
+    const duplicate = {
+      showtime_id: 'IMAX-22854',
+      layout: JSON.parse(fixtures.layout),
+      availability: JSON.parse(fixtures.availability),
+    }
+    const access = new CfClearanceManager({
+      runAcquire: async () => ({
+        success: true,
+        previews: [
+          duplicate,
+          duplicate,
+          { ...duplicate, showtime_id: 'IMAX-99999' },
+        ],
+      }),
+    })
+
+    const result = await access.fetchProtectedPreviews(
+      publicFilmUrl,
+      ['IMAX-22854'],
+      new AbortController().signal,
+    )
+
+    expect(result).toBeNull()
+    expect(access.state).toBe('failed')
   })
 
   it('polls only future sessions with proven IMAX showtime IDs within the request budget', async () => {

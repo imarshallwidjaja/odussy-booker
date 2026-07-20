@@ -9,7 +9,7 @@ import { freshnessThresholdMs, resolvePublicBaseUrl, resolveTrustProxy } from '.
 import { DisabledEmailSender, ResendEmailSender, type EmailSender } from './email.js'
 import { ImaxMelbourneListingProvider } from './provider.js'
 import { LumosPreviewSeatProvider } from './lumos-provider.js'
-import { CfClearanceManager } from './cf-clearance.js'
+import { CfClearanceManager, resolveProtectedPreviewTimeoutMs } from './cf-clearance.js'
 import { createSampleSessions } from './sample-data.js'
 import { PollScheduler } from './scheduler.js'
 
@@ -26,7 +26,7 @@ const previewCooldownMs = Number(process.env.LUMOS_PREVIEW_COOLDOWN_MS ?? 15 * 6
 const previewParkAfterMs = Number(process.env.LUMOS_PREVIEW_PARK_AFTER_MS ?? 48 * 60 * 60 * 1000)
 const previewParkDurationMs = Number(process.env.LUMOS_PREVIEW_PARK_DURATION_MS ?? 12 * 60 * 60 * 1000)
 const providerTimeoutMs = Number(process.env.PROVIDER_TIMEOUT_MS ?? 30_000)
-const previewTimeoutMs = Number(process.env.LUMOS_PREVIEW_TIMEOUT_MS ?? 30_000)
+const previewTimeoutMs = Number(process.env.LUMOS_PREVIEW_TIMEOUT_MS ?? 60_000)
 const deliveryTimeoutMs = Number(process.env.EMAIL_DELIVERY_TIMEOUT_MS ?? 30_000)
 const deliveryBatchSize = Number(process.env.OUTBOX_BATCH_SIZE ?? 25)
 const confirmationCooldownMs = Number(process.env.CONFIRMATION_COOLDOWN_MS ?? 15 * 60 * 1000)
@@ -67,14 +67,15 @@ if (sampleData) {
 }
 
 const filmUrl = process.env.LUMOS_FILM_URL ?? 'https://web.imaxmelbourne.com.au/films/HO00000547'
-const cfClearance = new CfClearanceManager()
-const clearanceFetch: typeof fetch = (input, init) => fetch(input, cfClearance.apply(init ?? {}))
+const cfClearance = new CfClearanceManager({
+  allowedHosts: [...new Set(lumosAllowedHosts)],
+  timeoutMs: resolveProtectedPreviewTimeoutMs(previewTimeoutMs),
+})
 
 const app = createApp({
   store,
   email,
   cfClearance,
-  filmUrl,
   ingestToken: process.env.INGEST_TOKEN,
   staticRoot: fileURLToPath(new URL('../../client', import.meta.url)),
   staleAfterMs,
@@ -84,13 +85,13 @@ const scheduler = new PollScheduler({
   provider: new ImaxMelbourneListingProvider({ filmIds }),
   seatProvider: new LumosPreviewSeatProvider({
     filmUrl,
-    fetchImpl: clearanceFetch,
+    fetchProtectedPreviews: (url, showtimeIds, signal) => (
+      cfClearance.fetchProtectedPreviews(url, showtimeIds, signal)
+    ),
     allowedHosts: [...new Set(lumosAllowedHosts)],
     concurrency: Number(process.env.LUMOS_PREVIEW_CONCURRENCY ?? 2),
     sessionBudget: Number(process.env.LUMOS_PREVIEW_SESSION_BUDGET ?? 12),
   }),
-  cfClearance,
-  cfFilmUrl: filmUrl,
   store,
   cooldownMs: pollCooldownMs,
   previewCooldownMs,

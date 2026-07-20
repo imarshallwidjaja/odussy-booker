@@ -4,12 +4,13 @@ import { readFile } from 'node:fs/promises'
 
 import { createElement, createRef, useState } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { cleanup, render as renderClient, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, render as renderClient, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { App } from '../src/client/App.js'
 import { AlertDialog } from '../src/client/components/AlertDialog.js'
+import { CfClearancePanel } from '../src/client/components/CfClearancePanel.js'
 import { FiltersPanel } from '../src/client/components/FiltersPanel.js'
 import { SeatMap } from '../src/client/components/SeatMap.js'
 import { SessionCard } from '../src/client/components/SessionCard.js'
@@ -48,6 +49,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  vi.useRealTimers()
   vi.unstubAllGlobals()
   history.replaceState(null, '', '/')
 })
@@ -331,6 +333,23 @@ describe('session card glance model', () => {
 })
 
 describe('dashboard controls', () => {
+  it('keeps polling protected preview status while exact seats are blocked', async () => {
+    vi.useFakeTimers()
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(Response.json({ state: 'failed', detail: 'Last attempt failed.' }))
+      .mockResolvedValueOnce(Response.json({ state: 'acquiring', detail: 'Fetching protected preview.' }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    renderClient(createElement(CfClearancePanel, { sampleData: false, seatBlocked: true }))
+    await act(async () => { await Promise.resolve() })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(screen.getByText(/Opening a headless browser/)).toBeTruthy()
+  })
+
   it('renders the filter panel collapsed by default so sessions stay primary', () => {
     const markup = renderToStaticMarkup(createElement(FiltersPanel, {
       filters: DEFAULT_FILTERS,

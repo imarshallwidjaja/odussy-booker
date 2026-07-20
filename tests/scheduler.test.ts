@@ -381,7 +381,11 @@ describe('PollScheduler', () => {
     })
 
     await scheduler.runOnce()
-    expect(store.getStatus()).toMatchObject({ transitionCount: 0, seatCapture: { state: 'fresh' } })
+    expect(store.getStatus()).toMatchObject({
+      transitionCount: 0,
+      lumosBootstrap: { state: 'ready', detail: 'Exact Lumos preview captured 1 session(s).' },
+      seatCapture: { state: 'fresh' },
+    })
     expect(deliveries).toEqual([])
 
     now = new Date('2026-07-17T00:01:00.000Z')

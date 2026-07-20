@@ -187,7 +187,6 @@ main {
 .notice-sample { border-left-color: var(--amber); color: var(--amber); }
 .notice-blocked { border-left-color: var(--red); }
 .notice-error { border-left-color: var(--red); color: var(--red); }
-.notice .error-text { margin-top: 8px; font-size: 13px; color: var(--red); }
 
 /* ---------- Intro ---------- */
 

@@ -1,93 +1,67 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 
 interface CfClearanceStatus {
-  state: 'valid' | 'expired' | 'never_acquired' | 'acquiring' | 'auto_failed'
+  state: 'idle' | 'acquiring' | 'succeeded' | 'failed'
   detail: string
 }
 
 export function CfClearancePanel({ sampleData, seatBlocked }: { sampleData: boolean; seatBlocked: boolean }) {
   const [status, setStatus] = useState<CfClearanceStatus | null>(null)
-  const [acquiring, setAcquiring] = useState(false)
-  const [error, setError] = useState('')
-  const mountedRef = useRef(true)
 
-  const fetchStatus = useCallback(async () => {
-    try {
-      const response = await fetch('/api/cf-clearance')
-      if (response.ok) {
+  useEffect(() => {
+    if (sampleData || !seatBlocked) return
+    let active = true
+    const fetchStatus = async () => {
+      try {
+        const response = await fetch('/api/cf-clearance')
+        if (!response.ok) return
         const data = (await response.json()) as CfClearanceStatus
-        if (mountedRef.current) setStatus(data)
+        if (active) setStatus(data)
+      } catch {
+        // API may not be available
       }
-    } catch {
-      // API may not be available
     }
-  }, [])
-
-  useEffect(() => {
-    mountedRef.current = true
-    fetchStatus()
-    return () => { mountedRef.current = false }
-  }, [fetchStatus])
-
-  const handleAcquire = useCallback(async () => {
-    setAcquiring(true)
-    setError('')
-    try {
-      const response = await fetch('/api/cf-clearance/acquire', { method: 'POST' })
-      const data = await response.json()
-      if (mountedRef.current) {
-        if (response.ok) {
-          setStatus({ state: 'valid', detail: 'Cloudflare clearance acquired successfully.' })
-          setAcquiring(false)
-          return
-        }
-        if (response.status === 409) {
-          setStatus({ state: 'acquiring', detail: 'Acquisition already in progress.' })
-          return
-        }
-        setError(data.detail ?? 'Acquisition failed.')
-        setStatus(data)
-      }
-    } catch {
-      if (mountedRef.current) setError('Failed to acquire Cloudflare clearance.')
-    } finally {
-      if (mountedRef.current) setAcquiring(false)
+    void fetchStatus()
+    const interval = setInterval(fetchStatus, 3000)
+    return () => {
+      active = false
+      clearInterval(interval)
     }
-  }, [])
-
-  useEffect(() => {
-    if (status?.state === 'acquiring') {
-      const interval = setInterval(fetchStatus, 3000)
-      return () => clearInterval(interval)
-    }
-  }, [status?.state, fetchStatus])
+  }, [sampleData, seatBlocked])
 
   if (!status || sampleData) return null
 
-  const acquiringInProgress = status.state === 'acquiring' || acquiring
-
-  if (status.state === 'valid' && !seatBlocked) return null
+  if (status.state === 'succeeded' && !seatBlocked) return null
 
   return (
-    <div className={`notice ${acquiringInProgress ? '' : 'notice-blocked'}`} role="note">
-      {acquiringInProgress
+    <div className={`notice ${status.state === 'acquiring' ? '' : 'notice-blocked'}`} role="note">
+      {status.state === 'acquiring'
         ? (
           <>
-            <strong>Acquiring Cloudflare clearance…</strong>
-            {' '}Opening a headless browser to solve the challenge. This may take 10-30 seconds.
+            <strong>Fetching the protected film bootstrap…</strong>
+            {' '}Opening a headless browser. This may take up to a minute.
           </>
         )
-        : (
-          <>
-            <strong>Cloudflare clearance needed.</strong>
-            {' '}{status.detail}
-            {' '}
-            <button type="button" className="ghost-button" onClick={handleAcquire}>
-              Acquire clearance
-            </button>
-          </>
-        )}
-      {error ? <p className="error-text">{error}</p> : null}
+        : status.state === 'succeeded'
+          ? (
+            <>
+              <strong>Protected fallback last succeeded.</strong>
+              {' '}{status.detail} Waiting for the next exact-seat preview attempt.
+            </>
+          )
+          : status.state === 'failed'
+            ? (
+              <>
+                <strong>Protected preview fallback failed.</strong>
+                {' '}{status.detail} It will retry on the next scheduled preview attempt.
+              </>
+            )
+            : (
+              <>
+                <strong>Protected preview fallback is waiting.</strong>
+                {' '}It will run on the next scheduled exact-seat preview attempt.
+              </>
+            )}
     </div>
   )
 }
