@@ -114,7 +114,15 @@ export interface IngestResult {
 
 export type SessionDiscoveryState = 'blocked' | 'error' | 'ok'
 export type LumosBootstrapState = 'pending' | 'ready' | 'blocked' | 'error'
-export type ExactSeatCaptureState = 'pending' | 'fresh' | 'partial' | 'blocked' | 'error'
+export type ExactSeatCaptureState = 'pending' | 'fresh' | 'partial' | 'blocked' | 'error' | 'parked'
+export type StatusHistoryStage = 'listing' | 'bootstrap' | 'seat_preview'
+
+export interface StatusHistoryEntry {
+  at: string
+  stage: StatusHistoryStage
+  state: string
+  detail: string
+}
 
 export interface AppStatus {
   mode: 'ephemeral'
@@ -125,6 +133,7 @@ export interface AppStatus {
   transitionCount: number
   pendingAlertCount: number
   lastManualIngest: string | null
+  history: StatusHistoryEntry[]
   sessionDiscovery: {
     state: SessionDiscoveryState
     detail: string

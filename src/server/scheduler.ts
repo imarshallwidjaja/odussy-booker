@@ -13,7 +13,10 @@ interface SchedulerOptions {
   previewTimeoutMs?: number
   deliveryTimeoutMs?: number
   deliveryBatchSize?: number
+  previewParkAfterMs?: number
+  previewParkDurationMs?: number
   now?: () => Date
+  random?: () => number
   onDeliveries?: (deliveries: AlertDelivery[], signal: AbortSignal) => Promise<string[]>
 }
 
@@ -27,13 +30,17 @@ export class PollScheduler {
   private readonly previewTimeoutMs: number
   private readonly deliveryTimeoutMs: number
   private readonly deliveryBatchSize: number
+  private readonly previewParkAfterMs: number
+  private readonly previewParkDurationMs: number
   private readonly now: () => Date
+  private readonly random: () => number
   private readonly onDeliveries?: (deliveries: AlertDelivery[], signal: AbortSignal) => Promise<string[]>
   private running = false
   private failures = 0
   private nextAllowedAt = 0
   private previewFailures = 0
   private nextPreviewAllowedAt = 0
+  private previewBlockedSince: number | null = null
   private deliveryFailures = 0
   private nextDeliveryAllowedAt = 0
   private readonly deliveryAttempts = new Map<string, number>()
@@ -64,6 +71,14 @@ export class PollScheduler {
     if (!Number.isInteger(deliveryBatchSize) || deliveryBatchSize < 1 || deliveryBatchSize > 100) {
       throw new Error('Delivery batch size must be an integer from 1 to 100')
     }
+    this.previewParkAfterMs = options.previewParkAfterMs ?? 48 * 60 * 60 * 1000
+    if (!Number.isInteger(this.previewParkAfterMs) || this.previewParkAfterMs < 1) {
+      throw new Error('Preview park threshold must be a positive integer')
+    }
+    this.previewParkDurationMs = options.previewParkDurationMs ?? 12 * 60 * 60 * 1000
+    if (!Number.isInteger(this.previewParkDurationMs) || this.previewParkDurationMs < 1) {
+      throw new Error('Preview park duration must be a positive integer')
+    }
     this.provider = options.provider
     this.seatProvider = options.seatProvider
     this.store = options.store
@@ -74,7 +89,12 @@ export class PollScheduler {
     this.deliveryTimeoutMs = deliveryTimeoutMs
     this.deliveryBatchSize = deliveryBatchSize
     this.now = options.now ?? (() => new Date())
+    this.random = options.random ?? Math.random
     this.onDeliveries = options.onDeliveries
+  }
+
+  private withJitter(baseMs: number): number {
+    return Math.floor(baseMs / 2 + this.random() * (baseMs / 2))
   }
 
   start(intervalMs: number): void {
@@ -104,7 +124,7 @@ export class PollScheduler {
           if (result.kind !== 'ok') {
             this.failures += 1
             const backoff = Math.min(this.cooldownMs * 2 ** (this.failures - 1), 60 * 60 * 1000)
-            this.nextAllowedAt = attemptedAt.getTime() + backoff
+            this.nextAllowedAt = attemptedAt.getTime() + this.withJitter(backoff)
             this.store.setUpstreamStatus(
               result.kind,
               result.kind === 'error' ? result.message : result.reason,
@@ -130,7 +150,7 @@ export class PollScheduler {
         } catch (error) {
           this.failures += 1
           const backoff = Math.min(this.cooldownMs * 2 ** (this.failures - 1), 60 * 60 * 1000)
-          this.nextAllowedAt = attemptedAt.getTime() + backoff
+          this.nextAllowedAt = attemptedAt.getTime() + this.withJitter(backoff)
           this.store.setUpstreamStatus('error', error instanceof Error ? error.message : 'Unknown provider error', {
             attemptedAt: attemptedAt.toISOString(),
             nextAttempt: new Date(this.nextAllowedAt).toISOString(),
@@ -145,7 +165,7 @@ export class PollScheduler {
         } catch (error) {
           this.previewFailures += 1
           const backoff = Math.min(this.previewCooldownMs * 2 ** (this.previewFailures - 1), 60 * 60 * 1000)
-          this.nextPreviewAllowedAt = attemptedAt.getTime() + backoff
+          this.nextPreviewAllowedAt = attemptedAt.getTime() + this.withJitter(backoff)
           this.store.setSeatCaptureStatus(
             'error',
             `${error instanceof Error ? error.message : 'Unknown preview error'} Signed manual ingest remains available.`,
@@ -182,7 +202,7 @@ export class PollScheduler {
         } else {
           this.deliveryFailures += 1
           const backoff = Math.min(this.cooldownMs * 2 ** (this.deliveryFailures - 1), 60 * 60 * 1000)
-          this.nextDeliveryAllowedAt = attemptedAt.getTime() + backoff
+          this.nextDeliveryAllowedAt = attemptedAt.getTime() + this.withJitter(backoff)
         }
       }
       return didWork
@@ -257,13 +277,22 @@ export class PollScheduler {
       }
     }
 
+    let parked = false
     if (result.kind === 'ok') {
       this.previewFailures = 0
+      this.previewBlockedSince = null
       this.nextPreviewAllowedAt = attemptedAt.getTime() + this.previewCooldownMs
     } else {
       this.previewFailures += 1
-      const backoff = Math.min(this.previewCooldownMs * 2 ** (this.previewFailures - 1), 60 * 60 * 1000)
-      this.nextPreviewAllowedAt = attemptedAt.getTime() + backoff
+      if (result.kind === 'blocked') this.previewBlockedSince ??= attemptedAt.getTime()
+      const blockedForMs = this.previewBlockedSince === null ? 0 : attemptedAt.getTime() - this.previewBlockedSince
+      if (result.kind === 'blocked' && blockedForMs >= this.previewParkAfterMs) {
+        parked = true
+        this.nextPreviewAllowedAt = attemptedAt.getTime() + this.previewParkDurationMs
+      } else {
+        const backoff = Math.min(this.previewCooldownMs * 2 ** (this.previewFailures - 1), 60 * 60 * 1000)
+        this.nextPreviewAllowedAt = attemptedAt.getTime() + Math.max(this.withJitter(backoff), result.retryAfterMs ?? 0)
+      }
     }
     const nextAttempt = new Date(this.nextPreviewAllowedAt).toISOString()
     if (result.bootstrap !== 'not_attempted') {
@@ -280,8 +309,10 @@ export class PollScheduler {
     this.store.recordSeatPreviewFailures(result.failures)
     if (result.bootstrap === 'not_attempted' && result.attemptedSessionCount === 0) return
 
-    const state = result.kind === 'blocked'
-      ? 'blocked'
+    const state = parked
+      ? 'parked'
+      : result.kind === 'blocked'
+        ? 'blocked'
         : result.kind === 'error'
           ? 'error'
         : result.failures.length > 0 || result.attemptedSessionCount < result.eligibleSessionCount

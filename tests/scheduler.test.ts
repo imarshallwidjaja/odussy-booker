@@ -74,7 +74,176 @@ describe('PollScheduler', () => {
 
     expect(() => new PollScheduler({ ...options, cooldownMs: Number.NaN })).toThrow(/cooldown/i)
     expect(() => new PollScheduler({ ...options, providerTimeoutMs: 0 })).toThrow(/timeout/i)
+    expect(() => new PollScheduler({ ...options, previewParkAfterMs: 0 })).toThrow(/park/i)
+    expect(() => new PollScheduler({ ...options, previewParkDurationMs: Number.NaN })).toThrow(/park/i)
     expect(() => new PollScheduler(options).start(Number.NaN)).toThrow(/interval/i)
+  })
+
+  it('jitters listing failure backoff inside the lower half of the computed ceiling', async () => {
+    const provider: UpstreamProvider = {
+      async fetchSessions() { return { kind: 'blocked', reason: 'Cloudflare challenge' } },
+    }
+    const now = new Date('2026-07-17T00:00:00.000Z')
+    const backoffFor = async (random: () => number) => {
+      const store = new MemoryStore({ filmIds: ['HO00000546'] })
+      const scheduler = new PollScheduler({ provider, store, cooldownMs: 60_000, now: () => now, random })
+      await scheduler.runOnce()
+      const status = store.getStatus().sessionDiscovery
+      return new Date(status.nextAttempt ?? 0).getTime() - new Date(status.lastAttempt ?? 0).getTime()
+    }
+
+    expect(await backoffFor(() => 0)).toBe(30_000)
+    expect(await backoffFor(() => 0.999_999)).toBeGreaterThan(30_000)
+    expect(await backoffFor(() => 0.999_999)).toBeLessThanOrEqual(60_000)
+  })
+
+  it('honors an upstream retry-after hint beyond the computed preview backoff', async () => {
+    let previewCalls = 0
+    let now = new Date('2026-07-17T00:00:00.000Z')
+    const provider: UpstreamProvider = {
+      async fetchSessions() { return { kind: 'ok', sessions: [listingSession] } },
+    }
+    const seatProvider: SeatPreviewProvider = {
+      async fetchSeatPreviews() {
+        previewCalls += 1
+        return {
+          kind: 'blocked',
+          bootstrap: 'blocked',
+          detail: 'Public film bootstrap returned HTTP 429',
+          retryAfterMs: 10 * 60 * 1000,
+          observations: [],
+          failures: [],
+          attemptedAt: now.toISOString(),
+          eligibleSessionCount: 1,
+          attemptedSessionCount: 0,
+        }
+      },
+    }
+    const store = new MemoryStore({ filmIds: ['HO00000546'], now: () => now })
+    const scheduler = new PollScheduler({
+      provider,
+      seatProvider,
+      store,
+      cooldownMs: 0,
+      previewCooldownMs: 0,
+      now: () => now,
+    })
+
+    await scheduler.runOnce()
+    const status = store.getStatus().seatCapture
+    expect(new Date(status.nextAttempt ?? 0).getTime() - now.getTime()).toBe(600_000)
+
+    now = new Date('2026-07-17T00:01:00.000Z')
+    await scheduler.runOnce()
+    expect(previewCalls).toBe(1)
+  })
+
+  it('parks exact preview polling after a sustained blocked streak and probes once per park window', async () => {
+    let previewCalls = 0
+    let now = new Date('2026-07-17T00:00:00.000Z')
+    const provider: UpstreamProvider = {
+      async fetchSessions() { return { kind: 'ok', sessions: [listingSession] } },
+    }
+    const seatProvider: SeatPreviewProvider = {
+      async fetchSeatPreviews() {
+        previewCalls += 1
+        return {
+          kind: 'blocked',
+          bootstrap: 'blocked',
+          detail: 'Public film bootstrap returned HTTP 403',
+          observations: [],
+          failures: [],
+          attemptedAt: now.toISOString(),
+          eligibleSessionCount: 1,
+          attemptedSessionCount: 0,
+        }
+      },
+    }
+    const store = new MemoryStore({ filmIds: ['HO00000546'], now: () => now })
+    const scheduler = new PollScheduler({
+      provider,
+      seatProvider,
+      store,
+      cooldownMs: 0,
+      previewCooldownMs: 0,
+      now: () => now,
+      previewParkAfterMs: 60_000,
+      previewParkDurationMs: 600_000,
+    })
+
+    await scheduler.runOnce()
+    now = new Date('2026-07-17T00:00:30.000Z')
+    await scheduler.runOnce()
+    expect(store.getStatus().seatCapture.state).toBe('blocked')
+    expect(previewCalls).toBe(2)
+
+    now = new Date('2026-07-17T00:01:01.000Z')
+    await scheduler.runOnce()
+    expect(store.getStatus().seatCapture).toMatchObject({
+      state: 'parked',
+      nextAttempt: '2026-07-17T00:11:01.000Z',
+    })
+    expect(previewCalls).toBe(3)
+
+    now = new Date('2026-07-17T00:01:02.000Z')
+    await scheduler.runOnce()
+    expect(previewCalls).toBe(3)
+
+    now = new Date('2026-07-17T00:11:01.500Z')
+    await scheduler.runOnce()
+    expect(previewCalls).toBe(4)
+    expect(store.getStatus().seatCapture.state).toBe('parked')
+
+    now = new Date('2026-07-17T00:11:02.000Z')
+    await scheduler.runOnce()
+    expect(previewCalls).toBe(4)
+  })
+
+  it('resets the preview blocked streak after a successful pass', async () => {
+    let previewCalls = 0
+    let now = new Date('2026-07-17T00:00:00.000Z')
+    const outcomes = ['blocked', 'ok', 'blocked', 'blocked'] as const
+    const provider: UpstreamProvider = {
+      async fetchSessions() { return { kind: 'ok', sessions: [listingSession] } },
+    }
+    const seatProvider: SeatPreviewProvider = {
+      async fetchSeatPreviews() {
+        const kind = outcomes[previewCalls] ?? 'blocked'
+        previewCalls += 1
+        return {
+          kind,
+          bootstrap: kind === 'ok' ? 'ready' : 'blocked',
+          detail: kind === 'ok' ? 'Exact Lumos preview captured 1 session(s).' : 'Public film bootstrap returned HTTP 403',
+          observations: [],
+          failures: [],
+          attemptedAt: now.toISOString(),
+          eligibleSessionCount: 0,
+          attemptedSessionCount: 0,
+        }
+      },
+    }
+    const store = new MemoryStore({ filmIds: ['HO00000546'], now: () => now })
+    const scheduler = new PollScheduler({
+      provider,
+      seatProvider,
+      store,
+      cooldownMs: 0,
+      previewCooldownMs: 0,
+      now: () => now,
+      previewParkAfterMs: 60_000,
+      previewParkDurationMs: 600_000,
+    })
+
+    await scheduler.runOnce() // blocked, streak starts
+    now = new Date('2026-07-17T00:00:30.000Z')
+    await scheduler.runOnce() // ok, streak resets
+    now = new Date('2026-07-17T00:01:01.000Z')
+    await scheduler.runOnce() // blocked, new streak starts
+    now = new Date('2026-07-17T00:01:31.000Z')
+    await scheduler.runOnce() // blocked, streak is only 30s old
+
+    expect(previewCalls).toBe(4)
+    expect(store.getStatus().seatCapture.state).toBe('blocked')
   })
 
   it('runs only one polling pass at a time', async () => {

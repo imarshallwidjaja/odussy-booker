@@ -22,6 +22,8 @@ if (!Number.isInteger(port) || port < 1 || port > 65_535) throw new Error('PORT 
 const pollIntervalMs = Number(process.env.POLL_INTERVAL_MS ?? 15 * 60 * 1000)
 const pollCooldownMs = Number(process.env.POLL_COOLDOWN_MS ?? 15 * 60 * 1000)
 const previewCooldownMs = Number(process.env.LUMOS_PREVIEW_COOLDOWN_MS ?? 15 * 60 * 1000)
+const previewParkAfterMs = Number(process.env.LUMOS_PREVIEW_PARK_AFTER_MS ?? 48 * 60 * 60 * 1000)
+const previewParkDurationMs = Number(process.env.LUMOS_PREVIEW_PARK_DURATION_MS ?? 12 * 60 * 60 * 1000)
 const providerTimeoutMs = Number(process.env.PROVIDER_TIMEOUT_MS ?? 30_000)
 const previewTimeoutMs = Number(process.env.LUMOS_PREVIEW_TIMEOUT_MS ?? 30_000)
 const deliveryTimeoutMs = Number(process.env.EMAIL_DELIVERY_TIMEOUT_MS ?? 30_000)
@@ -86,6 +88,8 @@ const scheduler = new PollScheduler({
   previewTimeoutMs,
   deliveryTimeoutMs,
   deliveryBatchSize,
+  previewParkAfterMs,
+  previewParkDurationMs,
   onDeliveries: email.configured ? (deliveries, signal) => email.sendAlerts(deliveries, signal) : undefined,
 })
 if (!sampleData) scheduler.start(pollIntervalMs)

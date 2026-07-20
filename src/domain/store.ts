@@ -13,6 +13,8 @@ import {
   type SeatRow,
   type SessionSnapshot,
   type SessionDiscoveryState,
+  type StatusHistoryEntry,
+  type StatusHistoryStage,
   type SubscriptionFilters,
   type SubscriptionView,
   type Transition,
@@ -38,6 +40,8 @@ interface StoreOptions {
 }
 
 export class RecipientSubscriptionLimitError extends Error {}
+
+const STATUS_HISTORY_LIMIT = 50
 
 const melbourneParts = new Intl.DateTimeFormat('en-AU', {
   timeZone: 'Australia/Melbourne',
@@ -109,6 +113,7 @@ export class MemoryStore {
   private transitionCount = 0
   private readonly outbox = new Map<string, AlertDelivery>()
   private lastManualIngest: string | null = null
+  private readonly history: StatusHistoryEntry[] = []
   private sessionDiscovery: AppStatus['sessionDiscovery'] = {
     state: 'blocked',
     detail: 'The public session listing has not been fetched yet.',
@@ -181,6 +186,7 @@ export class MemoryStore {
       transitionCount: this.transitionCount,
       pendingAlertCount: this.outbox.size,
       lastManualIngest: this.lastManualIngest,
+      history: [...this.history],
       sessionDiscovery: { ...this.sessionDiscovery },
       lumosBootstrap: { ...this.lumosBootstrap },
       seatCapture: {
@@ -209,6 +215,7 @@ export class MemoryStore {
       lastSuccess: options.succeeded ? options.attemptedAt : this.sessionDiscovery.lastSuccess,
       nextAttempt: options.nextAttempt,
     }
+    this.recordHistory('listing', state, detail, options.attemptedAt)
   }
 
   setLumosBootstrapStatus(
@@ -223,6 +230,7 @@ export class MemoryStore {
       lastSuccess: state === 'ready' ? options.attemptedAt : this.lumosBootstrap.lastSuccess,
       nextAttempt: options.nextAttempt,
     }
+    this.recordHistory('bootstrap', state, detail, options.attemptedAt)
   }
 
   setSeatCaptureStatus(
@@ -236,6 +244,12 @@ export class MemoryStore {
       lastAttempt: options.attemptedAt,
       nextAttempt: options.nextAttempt,
     }
+    this.recordHistory('seat_preview', state, detail, options.attemptedAt)
+  }
+
+  private recordHistory(stage: StatusHistoryStage, state: string, detail: string, at: string): void {
+    this.history.unshift({ at, stage, state, detail })
+    if (this.history.length > STATUS_HISTORY_LIMIT) this.history.length = STATUS_HISTORY_LIMIT
   }
 
   recordSeatPreviewFailures(failures: Array<{
@@ -335,7 +349,7 @@ export class MemoryStore {
               lastFailure: null,
             },
           }
-      if (!discovered && exactSeatsPreviouslyKnown && previous) {
+      if (source === 'preview' && exactSeatsPreviouslyKnown && previous) {
         const previousSeats = new Map(
           previous.seats.map((seat) => [`${seat.row}-${seat.number}`, seat.status]),
         )
@@ -368,6 +382,7 @@ export class MemoryStore {
         lastAttempt: occurredAt,
         nextAttempt: this.seatCapture.nextAttempt,
       }
+      this.recordHistory('seat_preview', 'fresh', this.seatCapture.detail, occurredAt)
     } else if (source === 'sample') {
       this.seatCapture = {
         state: 'fresh',
@@ -375,6 +390,7 @@ export class MemoryStore {
         lastAttempt: occurredAt,
         nextAttempt: null,
       }
+      this.recordHistory('seat_preview', 'fresh', this.seatCapture.detail, occurredAt)
     }
 
     return {

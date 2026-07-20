@@ -47,7 +47,7 @@ describe('MemoryStore ingest pipeline', () => {
         { row: 'J', number: 10, status: 'sold' },
         { row: 'J', number: 11, status: 'held' },
       ])],
-      'manual',
+      'preview',
       'event-1',
     )
     const update = store.ingest(
@@ -55,7 +55,7 @@ describe('MemoryStore ingest pipeline', () => {
         { row: 'J', number: 10, status: 'available' },
         { row: 'J', number: 11, status: 'available' },
       ])],
-      'manual',
+      'preview',
       'event-2',
     )
 
@@ -249,16 +249,82 @@ describe('MemoryStore ingest pipeline', () => {
     })], 'provider', 'listing')
     const baseline = store.ingest([session([
       { row: 'J', number: 10, status: 'sold' },
-    ], { id: 'manual-capture-1' })], 'manual', 'manual-1')
+    ], { id: 'preview-capture-1' })], 'preview', 'preview-1')
 
     const update = store.ingest([session([
       { row: 'J', number: 10, status: 'available' },
-    ], { id: 'manual-capture-2' })], 'manual', 'manual-2')
+    ], { id: 'preview-capture-2' })], 'preview', 'preview-2')
 
     expect(baseline.transitions).toEqual([])
     expect(update.deliveries).toHaveLength(1)
     expect(update.deliveries[0]?.sessions[0]?.sessionId).toBe('HO00000546-20260718T1900')
     expect(store.getSessions()).toHaveLength(1)
+  })
+
+  it('updates the dashboard from manual ingest without emitting transitions or alert deliveries', () => {
+    const store = new MemoryStore({ filmIds: [filmId] })
+    const created = store.createSubscription('ready@example.com', { ...filters, minimumSeats: 1, adjacentOnly: false })
+    store.confirmSubscription(created.confirmationToken)
+    store.ingest([session([{ row: 'J', number: 10, status: 'sold' }])], 'preview', 'preview-baseline')
+
+    const manual = store.ingest([session([{ row: 'J', number: 10, status: 'available' }])], 'manual', 'manual-update')
+
+    expect(manual).toMatchObject({ transitions: [], deliveries: [] })
+    expect(store.getPendingDeliveries()).toEqual([])
+    expect(store.getStatus().transitionCount).toBe(0)
+    expect(store.getSessions()[0]).toMatchObject({
+      seats: [{ row: 'J', number: 10, status: 'available' }],
+      seatData: { state: 'captured', source: 'manual' },
+    })
+  })
+
+  it('never emits transitions or alert deliveries from sample data', () => {
+    const store = new MemoryStore({ filmIds: [filmId], sampleData: true })
+    const created = store.createSubscription('ready@example.com', { ...filters, minimumSeats: 1, adjacentOnly: false })
+    store.confirmSubscription(created.confirmationToken)
+    store.ingest([session([{ row: 'J', number: 10, status: 'sold' }])], 'preview', 'preview-baseline')
+
+    const sample = store.ingest([session([{ row: 'J', number: 10, status: 'available' }])], 'sample', 'sample-update')
+
+    expect(sample).toMatchObject({ transitions: [], deliveries: [] })
+    expect(store.getPendingDeliveries()).toEqual([])
+    expect(store.getSessions()[0]).toMatchObject({
+      seats: [{ row: 'J', number: 10, status: 'available' }],
+      seatData: { state: 'captured', source: 'sample' },
+    })
+  })
+
+  it('records bounded per-stage status history newest-first', () => {
+    const store = new MemoryStore({ filmIds: [filmId] })
+    store.setUpstreamStatus('ok', 'Listing refreshed.', {
+      attemptedAt: '2026-07-18T00:00:00.000Z',
+      nextAttempt: null,
+      succeeded: true,
+    })
+    store.setLumosBootstrapStatus('blocked', 'Public film bootstrap returned HTTP 403', {
+      attemptedAt: '2026-07-18T00:01:00.000Z',
+      nextAttempt: null,
+    })
+    store.setSeatCaptureStatus('parked', 'Automatic preview parked.', {
+      attemptedAt: '2026-07-18T00:02:00.000Z',
+      nextAttempt: '2026-07-18T12:02:00.000Z',
+    })
+
+    expect(store.getStatus().history).toEqual([
+      { at: '2026-07-18T00:02:00.000Z', stage: 'seat_preview', state: 'parked', detail: 'Automatic preview parked.' },
+      { at: '2026-07-18T00:01:00.000Z', stage: 'bootstrap', state: 'blocked', detail: 'Public film bootstrap returned HTTP 403' },
+      { at: '2026-07-18T00:00:00.000Z', stage: 'listing', state: 'ok', detail: 'Listing refreshed.' },
+    ])
+
+    for (let index = 0; index < 60; index += 1) {
+      store.setUpstreamStatus('error', `Listing failure ${index}`, {
+        attemptedAt: `2026-07-18T01:${String(index).padStart(2, '0')}:00.000Z`,
+        nextAttempt: null,
+      })
+    }
+    const history = store.getStatus().history
+    expect(history).toHaveLength(50)
+    expect(history[0]).toMatchObject({ stage: 'listing', detail: 'Listing failure 59' })
   })
 
   it('rejects seats outside rows J-M', () => {
@@ -413,11 +479,11 @@ describe('MemoryStore subscriptions', () => {
     store.ingest([session([
       { row: 'J', number: 10, status: 'sold' },
       { row: 'J', number: 11, status: 'sold' },
-    ])], 'manual', 'baseline')
+    ])], 'preview', 'baseline')
     const update = store.ingest([session([
       { row: 'J', number: 10, status: 'available' },
       { row: 'J', number: 11, status: 'available' },
-    ])], 'manual', 'update')
+    ])], 'preview', 'update')
 
     expect(update.deliveries).toHaveLength(1)
     expect(update.deliveries[0]).toMatchObject({
@@ -433,12 +499,12 @@ describe('MemoryStore subscriptions', () => {
     store.ingest([session([
       { row: 'J', number: 10, status: 'sold' },
       { row: 'J', number: 12, status: 'sold' },
-    ])], 'manual', 'baseline')
+    ])], 'preview', 'baseline')
 
     const update = store.ingest([session([
       { row: 'J', number: 10, status: 'available' },
       { row: 'J', number: 12, status: 'available' },
-    ])], 'manual', 'update')
+    ])], 'preview', 'update')
 
     expect(update.deliveries).toHaveLength(0)
   })
@@ -453,11 +519,11 @@ describe('MemoryStore subscriptions', () => {
     store.confirmSubscription(created.confirmationToken)
     store.ingest([session([
       { row: 'J', number: 10, status: 'sold' },
-    ])], 'manual', 'baseline')
+    ])], 'preview', 'baseline')
 
     const update = store.ingest([session([
       { row: 'J', number: 10, status: 'available' },
-    ])], 'manual', 'update')
+    ])], 'preview', 'update')
 
     expect(store.getPendingDeliveries()).toEqual(update.deliveries)
     expect(store.getPendingDeliveries()[0]?.id).toBe(update.deliveries[0]?.id)
@@ -486,8 +552,8 @@ describe('MemoryStore subscriptions', () => {
       adjacentOnly: false,
     })
     store.confirmSubscription(created.confirmationToken)
-    store.ingest([session([{ row: 'J', number: 10, status: 'sold' }])], 'manual', 'baseline')
-    store.ingest([session([{ row: 'J', number: 10, status: 'available' }])], 'manual', 'update')
+    store.ingest([session([{ row: 'J', number: 10, status: 'sold' }])], 'preview', 'baseline')
+    store.ingest([session([{ row: 'J', number: 10, status: 'available' }])], 'preview', 'update')
     expect(store.getPendingDeliveries()).toHaveLength(1)
 
     store.unsubscribe(created.unsubscribeToken)

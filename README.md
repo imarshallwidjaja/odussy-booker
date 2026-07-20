@@ -17,7 +17,7 @@ The discovered CMS and Digital API URLs must be allowed HTTPS hosts with a root 
 
 Only Rows J-M are normalized. Numeric physical seat labels are authoritative. When a seat has a non-numeric label, the deterministic fallback is its zero-based Vista `position.columnIndex` plus one, or its one-based position in that layout row when no column index exists. Duplicate IDs or row-number collisions fail that session rather than publishing a corrupted map. `Available` maps to available, `Sold` to sold, and `Broken`, `House`, or a missing availability entry to held/unknown.
 
-Cloudflare can still block the public film bootstrap from a server IP. A challenge, 403, or 429 is reported as blocked and receives exponential cooldown without challenge retries. Session discovery remains healthy, last-known exact seats are preserved, other sessions continue after an isolated malformed response, and signed manual ingest remains available. Exact seats are bound to the Vista source showtime ID: a changed source starts a new no-alert baseline, while a missing source retains the prior map only as explicitly last-known until the same source is captured again. Listing-level `filling` never becomes a seat count and a failed exact preview never implies availability.
+Cloudflare can still block the public film bootstrap from a server IP. A challenge, 403, or 429 is reported as blocked and receives exponential cooldown with jitter, honoring any upstream `Retry-After` hint, without challenge retries. If blocks persist continuously for `LUMOS_PREVIEW_PARK_AFTER_MS` (default 48 hours), exact preview parking stops probing for `LUMOS_PREVIEW_PARK_DURATION_MS` (default 12 hours) at a time — one probe per park window — and the dashboard reports `J-M PARKED`. Session discovery remains healthy, last-known exact seats are preserved, other sessions continue after an isolated malformed response, and signed manual ingest remains available. Exact seats are bound to the Vista source showtime ID: a changed source starts a new no-alert baseline, while a missing source retains the prior map only as explicitly last-known until the same source is captured again. Listing-level `filling` never becomes a seat count and a failed exact preview never implies availability.
 
 ## Ephemeral State
 
@@ -60,6 +60,8 @@ npm run build
 | `LUMOS_PREVIEW_SESSION_BUDGET` | `12` | Maximum upcoming linked sessions previewed per polling pass. |
 | `LUMOS_PREVIEW_COOLDOWN_MS` | `900000` | Minimum exact-preview cooldown and initial blocked/error backoff. |
 | `LUMOS_PREVIEW_TIMEOUT_MS` | `30000` | Whole exact-preview pass deadline. |
+| `LUMOS_PREVIEW_PARK_AFTER_MS` | `172800000` | Continuous upstream-block duration after which exact preview parks instead of backing off further. Set very high to disable parking. |
+| `LUMOS_PREVIEW_PARK_DURATION_MS` | `43200000` | How long one park window lasts; a single probe is allowed when each window expires. |
 | `LUMOS_ALLOWED_HOSTS` | unset | Optional comma-separated HTTPS host suffixes added to the built-in IMAX Melbourne and Vista allowlist. |
 | `RESEND_API_KEY` | unset | Resend API key. |
 | `ALERT_FROM` | unset | Verified Resend sender, for example `House Lights <alerts@example.com>`. |
@@ -77,7 +79,7 @@ With `TRUST_PROXY=false`, rate limiting uses the direct connection address and f
 ## HTTP API
 
 - `GET /health`: process health plus listing-discovery, Lumos-bootstrap, exact-seat-capture, and email state.
-- `GET /api/status`: separate public-listing, Lumos-bootstrap, and exact-seat capture state/freshness.
+- `GET /api/status`: separate public-listing, Lumos-bootstrap, and exact-seat capture state/freshness, plus a bounded newest-first history of the 50 most recent per-stage status changes.
 - `GET /api/sessions`: live session metadata plus explicit listing and exact-seat capture state for each session.
 - `POST /api/subscriptions`: strict email and alert-filter validation with in-memory per-IP rate limiting and 24-hour double opt-in.
 - `POST /api/ingest`: strict manual observation ingest protected by `Authorization: Bearer $INGEST_TOKEN`.
@@ -87,7 +89,7 @@ With `TRUST_PROXY=false`, rate limiting uses the direct connection address and f
 
 Confirmation, manage, and unsubscribe responses use `Referrer-Policy: no-referrer` and `Cache-Control: no-store` so token URLs are not cached or sent as referrers.
 
-Subscription filters support selected film IDs, `all|70mm|laser`, Melbourne weekdays, preset or custom Melbourne-local time, minimum seats from 1 through 6, and optional adjacency. Session discovery never establishes a seat baseline. The first exact Lumos preview or manual snapshot establishes the baseline without alerting; only a later exact `sold|held` to `available` transition can trigger a verified matching subscription.
+Subscription filters support selected film IDs, `all|70mm|laser`, Melbourne weekdays, preset or custom Melbourne-local time, minimum seats from 1 through 6, and optional adjacency. Session discovery never establishes a seat baseline. The first exact Lumos preview or manual snapshot establishes the baseline without alerting; only a later exact `sold|held` to `available` transition observed by the live Lumos preview can trigger a verified matching subscription. Manual and sample snapshots update the dashboard but never emit transitions or alert email, so operator-supplied or fixture data cannot notify subscribers by accident.
 
 ## Manual Ingest
 
@@ -114,7 +116,7 @@ curl --request POST http://localhost:3000/api/ingest \
   }'
 ```
 
-Reusing an `eventId` is idempotent. Lumos preview and manual exact-seat updates use the same baseline, diff, matching, bundle, outbox, and dedupe pipeline. Public listing discovery only refreshes session metadata and preserves captured seats.
+Reusing an `eventId` is idempotent. Lumos preview and manual exact-seat updates share the same baseline and diff pipeline, and a manual ingest drains any pending alert outbox; manual snapshots themselves never create alert deliveries. Public listing discovery only refreshes session metadata and preserves captured seats.
 
 ## Sample Data
 

@@ -184,7 +184,10 @@ export function App() {
             {!status?.sampleData && seatCaptureState === 'partial'
               ? <span className="badge badge-blocked">J-M PARTIAL</span>
               : null}
-            {!status?.sampleData && (seatCaptureState === 'blocked' || lumosBootstrapState === 'blocked')
+            {!status?.sampleData && seatCaptureState === 'parked'
+              ? <span className="badge badge-blocked">J-M PARKED</span>
+              : null}
+            {!status?.sampleData && seatCaptureState !== 'parked' && (seatCaptureState === 'blocked' || lumosBootstrapState === 'blocked')
               ? <span className="badge badge-blocked">J-M BLOCKED</span>
               : null}
             {!status?.sampleData && seatCaptureState === 'error'
@@ -216,6 +219,14 @@ export function App() {
           ? (
             <div className="notice notice-blocked" role="note">
               <strong>Automatic exact J-M preview is blocked.</strong>{' '}
+              {status?.seatCapture.detail} Last-known exact seats remain visible where available.
+            </div>
+          )
+          : null}
+        {!status?.sampleData && discoveryState === 'ok' && seatCaptureState === 'parked'
+          ? (
+            <div className="notice notice-blocked" role="note">
+              <strong>Automatic exact J-M preview is parked after repeated upstream blocks.</strong>{' '}
               {status?.seatCapture.detail} Last-known exact seats remain visible where available.
             </div>
           )
@@ -311,6 +322,7 @@ export function App() {
                  freshnessText={listingFreshnessText}
                  sampleData={Boolean(status?.sampleData)}
                  selected={explicitSelected?.id === session.id}
+                 now={now}
                 onSelect={() => selectSession(session)}
               />
             ))}

@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url'
 import { describe, expect, it, vi } from 'vitest'
 
 import { MemoryStore } from '../src/domain/store.js'
-import type { AlertDelivery, SubscriptionFilters, SubscriptionView } from '../src/domain/types.js'
+import type { AlertDelivery, SessionSnapshot, SubscriptionFilters, SubscriptionView } from '../src/domain/types.js'
 import { createApp } from '../src/server/app.js'
 import { freshnessThresholdMs, resolvePublicBaseUrl, resolveTrustProxy } from '../src/server/config.js'
 import { ResendEmailSender, type EmailSender } from '../src/server/email.js'
@@ -135,6 +135,30 @@ describe('Hono API', () => {
     })
     expect(JSON.stringify(status)).not.toContain('gasToken')
     expect(JSON.stringify(status)).not.toContain('fixture-signature')
+  })
+
+  it('exposes bounded per-stage provider history in the status payload without secrets', async () => {
+    const { app, store } = setup({ configured: false, sendConfirmation: async () => {}, sendAlerts: async () => [] })
+    store.setUpstreamStatus('ok', 'Public listing refresh completed.', {
+      attemptedAt: '2026-07-18T00:00:00.000Z',
+      nextAttempt: null,
+      succeeded: true,
+    })
+    store.setSeatCaptureStatus('blocked', 'Automatic exact preview is blocked.', {
+      attemptedAt: '2026-07-18T00:01:00.000Z',
+      nextAttempt: null,
+    })
+
+    const body = await (await app.request('/api/status')).json()
+
+    expect(body.history[0]).toMatchObject({
+      at: '2026-07-18T00:01:00.000Z',
+      stage: 'seat_preview',
+      state: 'blocked',
+      detail: 'Automatic exact preview is blocked.',
+    })
+    expect(body.history[1]).toMatchObject({ stage: 'listing', state: 'ok' })
+    expect(JSON.stringify(body)).not.toContain('gasToken')
   })
 
   it('rejects unauthorized ingest and accepts a valid bearer token', async () => {
@@ -516,20 +540,19 @@ describe('Hono API', () => {
       }),
     })
     await app.request(`/confirm?token=${confirmationToken}`, { method: 'POST' })
-    await app.request('/api/ingest', {
-      method: 'POST',
-      headers: { authorization: 'Bearer secret-ingest-token', 'content-type': 'application/json' },
-      body: JSON.stringify(payload),
+    const seeded = (seats: SessionSnapshot['seats']): SessionSnapshot => ({
+      ...payload.sessions[0]!,
+      listing: { status: 'unknown', observedAt: null, sourceId: null },
+      seatData: { state: 'captured', capturedAt: null },
+      seats,
     })
-    const available = {
-      ...payload,
-      eventId: 'manual-2',
-      sessions: [{ ...payload.sessions[0], seats: [{ row: 'J', number: 10, status: 'available' }] }],
-    }
+    store.ingest([seeded([{ row: 'J', number: 10, status: 'sold' }])], 'preview', 'preview-baseline')
+    store.ingest([seeded([{ row: 'J', number: 10, status: 'available' }])], 'preview', 'preview-update')
+    expect(store.getPendingDeliveries()).toHaveLength(1)
     const request = () => app.request('/api/ingest', {
       method: 'POST',
       headers: { authorization: 'Bearer secret-ingest-token', 'content-type': 'application/json' },
-      body: JSON.stringify(available),
+      body: JSON.stringify(payload),
     })
 
     expect((await request()).status).toBe(502)

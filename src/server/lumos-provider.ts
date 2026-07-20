@@ -32,6 +32,7 @@ export interface SeatPreviewResult {
   attemptedAt: string
   eligibleSessionCount: number
   attemptedSessionCount: number
+  retryAfterMs?: number
 }
 
 export interface SeatPreviewProvider {
@@ -60,9 +61,33 @@ interface CachedBootstrap extends BootstrapData {
 }
 
 class LumosFailure extends Error {
-  constructor(readonly kind: Exclude<PreviewResultKind, 'ok'>, message: string) {
+  constructor(
+    readonly kind: Exclude<PreviewResultKind, 'ok'>,
+    message: string,
+    readonly retryAfterMs?: number,
+  ) {
     super(message)
   }
+}
+
+const RETRY_AFTER_CAP_MS = 24 * 60 * 60 * 1000
+
+function parseRetryAfterMs(value: string | null, nowMs: number): number | undefined {
+  if (!value) return undefined
+  const seconds = Number(value)
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.min(seconds * 1000, RETRY_AFTER_CAP_MS)
+  const dateMs = Date.parse(value)
+  if (Number.isFinite(dateMs)) return Math.min(Math.max(0, dateMs - nowMs), RETRY_AFTER_CAP_MS)
+  return undefined
+}
+
+function blockedFailure(label: string, response: Response, nowMs: number): LumosFailure {
+  const ray = response.headers.get('cf-ray')
+  return new LumosFailure(
+    'blocked',
+    `${label} returned HTTP ${response.status}${ray ? ` (CF-Ray ${ray})` : ''}`,
+    parseRetryAfterMs(response.headers.get('retry-after'), nowMs),
+  )
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -358,11 +383,13 @@ export class LumosPreviewSeatProvider implements SeatPreviewProvider {
         attemptedAt,
         eligibleSessionCount: eligible.length,
         attemptedSessionCount: 0,
+        ...(failure.retryAfterMs === undefined ? {} : { retryAfterMs: failure.retryAfterMs }),
       }
     }
 
     const observations: SessionSnapshot[] = []
     const failures: SeatPreviewFailure[] = []
+    let retryAfterMs: number | undefined
     let nextIndex = 0
     let blocked = false
     const worker = async (): Promise<void> => {
@@ -376,7 +403,12 @@ export class LumosPreviewSeatProvider implements SeatPreviewProvider {
         } catch (error) {
           const failure = safeFailure(error)
           failures.push({ sessionId: session.id, attemptedAt, kind: failure.kind, detail: failure.message })
-          if (failure.kind === 'blocked') blocked = true
+          if (failure.kind === 'blocked') {
+            blocked = true
+            if (failure.retryAfterMs !== undefined) {
+              retryAfterMs = Math.max(retryAfterMs ?? 0, failure.retryAfterMs)
+            }
+          }
         }
       }
     }
@@ -399,6 +431,7 @@ export class LumosPreviewSeatProvider implements SeatPreviewProvider {
       attemptedAt,
       eligibleSessionCount: eligible.length,
       attemptedSessionCount: observations.length + failures.length,
+      ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
     }
   }
 
@@ -458,7 +491,7 @@ export class LumosPreviewSeatProvider implements SeatPreviewProvider {
       }
       if (response.status === 401) throw new LumosFailure('error', `${label} authorization failed after one refresh`)
       if (response.status === 403 || response.status === 429) {
-        throw new LumosFailure('blocked', `${label} returned HTTP ${response.status}`)
+        throw blockedFailure(label, response, this.now().getTime())
       }
       if (!response.ok || response.status >= 300 && response.status < 400) {
         throw new LumosFailure('error', `${label} returned HTTP ${response.status}`)
@@ -491,7 +524,7 @@ export class LumosPreviewSeatProvider implements SeatPreviewProvider {
         },
       })
       if (response.status === 403 || response.status === 429) {
-        throw new LumosFailure('blocked', `Public film bootstrap returned HTTP ${response.status}`)
+        throw blockedFailure('Public film bootstrap', response, this.now().getTime())
       }
       if (!response.ok || response.status >= 300 && response.status < 400) {
         throw new LumosFailure('error', `Public film bootstrap returned HTTP ${response.status}`)
@@ -520,7 +553,7 @@ export class LumosPreviewSeatProvider implements SeatPreviewProvider {
         throw new LumosFailure('error', 'Lumos CMS configuration authorization failed after one refresh')
       }
       if (configurationResponse.status === 403 || configurationResponse.status === 429) {
-        throw new LumosFailure('blocked', `Lumos CMS configuration returned HTTP ${configurationResponse.status}`)
+        throw blockedFailure('Lumos CMS configuration', configurationResponse, this.now().getTime())
       }
       if (!configurationResponse.ok || configurationResponse.status >= 300 && configurationResponse.status < 400) {
         throw new LumosFailure('error', `Lumos CMS configuration returned HTTP ${configurationResponse.status}`)

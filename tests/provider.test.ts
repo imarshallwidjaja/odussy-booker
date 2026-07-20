@@ -655,4 +655,39 @@ describe('Lumos read-only seat preview provider', () => {
     expect(JSON.stringify(result)).not.toContain('fixture-signature')
     expect(calls).toBe(1)
   })
+
+  it('surfaces retry-after and CF-Ray hints when the public bootstrap is blocked', async () => {
+    const provider = new LumosPreviewSeatProvider({
+      filmUrl: publicFilmUrl,
+      fetchImpl: async () => new Response(null, {
+        status: 429,
+        headers: { 'retry-after': '120', 'cf-ray': '8f8f8f8f-MEL' },
+      }),
+      now: () => new Date('2026-07-20T00:00:00.000Z'),
+    })
+
+    const result = await provider.fetchSeatPreviews([linkedSession()], new AbortController().signal)
+
+    expect(result).toMatchObject({ kind: 'blocked', bootstrap: 'blocked', retryAfterMs: 120_000 })
+    expect(result.failures[0]?.detail).toContain('8f8f8f8f-MEL')
+  })
+
+  it('surfaces a retry-after hint when a seat-preview request is blocked', async () => {
+    const fixtures = await lumosFixtures()
+    const provider = new LumosPreviewSeatProvider({
+      filmUrl: publicFilmUrl,
+      fetchImpl: async (input) => {
+        const url = String(input)
+        if (url === publicFilmUrl) return new Response(fixtures.film)
+        if (url.includes('/configuration')) return Response.json(JSON.parse(fixtures.cms))
+        if (url.endsWith('/seat-layout')) return Response.json(JSON.parse(fixtures.layout))
+        return new Response(null, { status: 403, headers: { 'retry-after': '30' } })
+      },
+      now: () => new Date('2026-07-20T00:00:00.000Z'),
+    })
+
+    const result = await provider.fetchSeatPreviews([linkedSession()], new AbortController().signal)
+
+    expect(result).toMatchObject({ kind: 'blocked', bootstrap: 'ready', retryAfterMs: 30_000 })
+  })
 })

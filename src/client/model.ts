@@ -238,6 +238,11 @@ export function relativeFreshness(now: number, iso: string | null): string {
   return `Updated ${hours} h ${minutes % 60} min ago`
 }
 
+export function captureAgeText(now: number, iso: string | null): string | null {
+  if (!iso) return null
+  return relativeFreshness(now, iso).replace(/^Updated /, '')
+}
+
 const DAY_SHORT: Record<Weekday, string> = {
   monday: 'Mon',
   tuesday: 'Tue',

@@ -1,5 +1,5 @@
 import { seatRows, type SessionSnapshot } from '../../domain/types.js'
-import { sessionCardModel, sessionDateLabel, sessionTimeLabel } from '../model.js'
+import { captureAgeText, sessionCardModel, sessionDateLabel, sessionTimeLabel } from '../model.js'
 
 interface SessionCardProps {
   session: SessionSnapshot
@@ -7,10 +7,12 @@ interface SessionCardProps {
   sampleData: boolean
   selected: boolean
   onSelect: () => void
+  now?: number
 }
 
-export function SessionCard({ session, freshnessText, sampleData, selected, onSelect }: SessionCardProps) {
+export function SessionCard({ session, freshnessText, sampleData, selected, onSelect, now }: SessionCardProps) {
   const model = sessionCardModel(session)
+  const captureAge = captureAgeText(now ?? Date.now(), session.seatData.capturedAt)
   const captureLabel = session.seatData.state === 'last_known'
     ? 'J-M LAST-KNOWN'
     : session.seatData.state === 'captured'
@@ -65,6 +67,7 @@ export function SessionCard({ session, freshnessText, sampleData, selected, onSe
       {session.listing.status === 'soldout' ? <p className="session-status">Session sold out</p> : null}
       <p className={`card-freshness${sampleData ? ' card-freshness-sample' : ''}`}>
         {sampleData ? 'SAMPLE DATA · ' : ''}{freshnessText}
+        {captureAge && !sampleData ? ` · J-M captured ${captureAge}` : ''}
       </p>
       <div className="card-actions">
         <button type="button" className="ghost-button" onClick={onSelect}>

@@ -250,6 +250,31 @@ describe('session card glance model', () => {
     expect(sessionCardModel(session).wording).toBe('5 across J-M')
   })
 
+  it('shows the exact-seat capture age alongside listing freshness only when captured', () => {
+    const now = new Date('2026-07-19T12:05:00.000Z').getTime()
+    const captured = renderToStaticMarkup(createElement(SessionCard, {
+      session: makeSession({
+        seatData: { state: 'captured', capturedAt: '2026-07-19T12:00:00.000Z', source: 'lumos_preview' },
+      }),
+      freshnessText: 'Sessions updated just now',
+      sampleData: false,
+      selected: false,
+      onSelect: () => undefined,
+      now,
+    }))
+    const uncaptured = renderToStaticMarkup(createElement(SessionCard, {
+      session: makeSession({ seats: [], seatData: { state: 'unavailable', capturedAt: null } }),
+      freshnessText: 'Sessions updated just now',
+      sampleData: false,
+      selected: false,
+      onSelect: () => undefined,
+      now,
+    }))
+
+    expect(captured).toContain('Sessions updated just now · J-M captured 5 min ago')
+    expect(uncaptured).not.toContain('J-M captured')
+  })
+
   it('renders sample status on each card alongside its freshness', () => {
     const markup = renderToStaticMarkup(createElement(SessionCard, {
       session: makeSession(),
@@ -468,7 +493,7 @@ describe('dashboard controls', () => {
 })
 
 describe('dashboard behavior', () => {
-  function mockDashboard(sessions: SessionSnapshot[]) {
+  function mockDashboard(sessions: SessionSnapshot[], seatCaptureState = 'partial') {
     vi.stubGlobal('fetch', async (input: string | URL | Request) => {
       const url = String(input)
       if (url === '/api/sessions') return Response.json({ sessions, timezone: 'Australia/Melbourne' })
@@ -494,7 +519,7 @@ describe('dashboard behavior', () => {
           },
           lumosBootstrap: { state: 'ready', detail: 'Ready.', lastAttempt: null, lastSuccess: null, nextAttempt: null },
           seatCapture: {
-            state: 'partial',
+            state: seatCaptureState,
             detail: 'One session remains.',
             lastAttempt: null,
             lastCapture: null,
@@ -572,6 +597,15 @@ describe('dashboard behavior', () => {
     expect(document.querySelector('a, button, input, select, textarea, [tabindex]')).toBe(skip)
     expect(skip.getAttribute('href')).toBe('#sessions')
     expect(document.querySelector('#sessions')).not.toBeNull()
+  })
+
+  it('exposes a parked badge and notice while automatic exact preview is parked', async () => {
+    mockDashboard([makeSession()], 'parked')
+    renderClient(createElement(App))
+
+    expect(await screen.findByText('J-M PARKED')).toBeTruthy()
+    expect(await screen.findByText(/Automatic exact J-M preview is parked/)).toBeTruthy()
+    expect(screen.queryByText('J-M BLOCKED')).toBeNull()
   })
 })
 
