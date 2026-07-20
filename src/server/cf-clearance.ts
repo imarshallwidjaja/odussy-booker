@@ -6,6 +6,7 @@ const ACQUIRE_SCRIPT = resolve(
   dirname(fileURLToPath(import.meta.url)),
   '..',
   '..',
+  '..',
   'tools',
   'cf-clearance-acquire.py',
 )
