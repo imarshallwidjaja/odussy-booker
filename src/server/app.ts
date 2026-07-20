@@ -7,6 +7,8 @@ import { Hono } from 'hono'
 
 import { RecipientSubscriptionLimitError, type MemoryStore } from '../domain/store.js'
 import type { SubscriptionFilters, TimePreset } from '../domain/types.js'
+import type { CfClearanceManager } from './cf-clearance.js'
+import { createCfClearanceRoutes } from './cf-clearance-routes.js'
 import type { EmailSender } from './email.js'
 import { escapeHtml } from './html.js'
 import { readBoundedText } from './http.js'
@@ -15,6 +17,8 @@ import { createSchemas } from './validation.js'
 interface AppOptions {
   store: MemoryStore
   email: EmailSender
+  cfClearance?: CfClearanceManager
+  filmUrl?: string
   ingestToken?: string
   staticRoot?: string
   staleAfterMs?: number
@@ -292,6 +296,11 @@ export function createApp(options: AppOptions): Hono {
       : htmlPage('Link invalid', '<p>This unsubscribe link is invalid.</p>'),
     unsubscribed ? 200 : 404)
   })
+
+  if (options.cfClearance && options.filmUrl) {
+    const cfRoutes = createCfClearanceRoutes({ manager: options.cfClearance, filmUrl: options.filmUrl })
+    app.route('/api/cf-clearance', cfRoutes)
+  }
 
   if (options.staticRoot) {
     app.all('/api', (context) => context.json({ error: 'not_found' }, 404))

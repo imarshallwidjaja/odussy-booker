@@ -9,6 +9,7 @@ import { freshnessThresholdMs, resolvePublicBaseUrl, resolveTrustProxy } from '.
 import { DisabledEmailSender, ResendEmailSender, type EmailSender } from './email.js'
 import { ImaxMelbourneListingProvider } from './provider.js'
 import { LumosPreviewSeatProvider } from './lumos-provider.js'
+import { CfClearanceManager } from './cf-clearance.js'
 import { createSampleSessions } from './sample-data.js'
 import { PollScheduler } from './scheduler.js'
 
@@ -65,9 +66,15 @@ if (sampleData) {
   console.warn('DEV_SAMPLE_DATA is enabled. The dashboard is showing SAMPLE DATA, not live availability.')
 }
 
+const filmUrl = process.env.LUMOS_FILM_URL ?? 'https://web.imaxmelbourne.com.au/films/HO00000547'
+const cfClearance = new CfClearanceManager()
+const clearanceFetch: typeof fetch = (input, init) => fetch(input, cfClearance.apply(init ?? {}))
+
 const app = createApp({
   store,
   email,
+  cfClearance,
+  filmUrl,
   ingestToken: process.env.INGEST_TOKEN,
   staticRoot: fileURLToPath(new URL('../../client', import.meta.url)),
   staleAfterMs,
@@ -76,11 +83,14 @@ const app = createApp({
 const scheduler = new PollScheduler({
   provider: new ImaxMelbourneListingProvider({ filmIds }),
   seatProvider: new LumosPreviewSeatProvider({
-    filmUrl: process.env.LUMOS_FILM_URL ?? 'https://web.imaxmelbourne.com.au/films/HO00000547',
+    filmUrl,
+    fetchImpl: clearanceFetch,
     allowedHosts: [...new Set(lumosAllowedHosts)],
     concurrency: Number(process.env.LUMOS_PREVIEW_CONCURRENCY ?? 2),
     sessionBudget: Number(process.env.LUMOS_PREVIEW_SESSION_BUDGET ?? 12),
   }),
+  cfClearance,
+  cfFilmUrl: filmUrl,
   store,
   cooldownMs: pollCooldownMs,
   previewCooldownMs,

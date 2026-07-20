@@ -2,10 +2,13 @@ import type { AlertDelivery } from '../domain/types.js'
 import type { MemoryStore } from '../domain/store.js'
 import type { ProviderResult, UpstreamProvider } from './provider.js'
 import type { SeatPreviewProvider, SeatPreviewResult } from './lumos-provider.js'
+import type { CfClearanceManager } from './cf-clearance.js'
 
 interface SchedulerOptions {
   provider: UpstreamProvider
   seatProvider?: SeatPreviewProvider
+  cfClearance?: CfClearanceManager
+  cfFilmUrl?: string
   store: MemoryStore
   cooldownMs: number
   previewCooldownMs?: number
@@ -23,6 +26,8 @@ interface SchedulerOptions {
 export class PollScheduler {
   private readonly provider: UpstreamProvider
   private readonly seatProvider?: SeatPreviewProvider
+  private readonly cfClearance?: CfClearanceManager
+  private readonly cfFilmUrl?: string
   private readonly store: MemoryStore
   private readonly cooldownMs: number
   private readonly previewCooldownMs: number
@@ -81,6 +86,8 @@ export class PollScheduler {
     }
     this.provider = options.provider
     this.seatProvider = options.seatProvider
+    this.cfClearance = options.cfClearance
+    this.cfFilmUrl = options.cfFilmUrl
     this.store = options.store
     this.cooldownMs = options.cooldownMs
     this.previewCooldownMs = previewCooldownMs
@@ -285,13 +292,32 @@ export class PollScheduler {
     } else {
       this.previewFailures += 1
       if (result.kind === 'blocked') this.previewBlockedSince ??= attemptedAt.getTime()
-      const blockedForMs = this.previewBlockedSince === null ? 0 : attemptedAt.getTime() - this.previewBlockedSince
-      if (result.kind === 'blocked' && blockedForMs >= this.previewParkAfterMs) {
-        parked = true
-        this.nextPreviewAllowedAt = attemptedAt.getTime() + this.previewParkDurationMs
+
+      if (result.kind === 'blocked' && this.cfClearance && this.cfFilmUrl) {
+        const acquired = await this.cfClearance.tryAutoRetry(this.cfFilmUrl)
+        if (acquired) {
+          this.previewFailures = 0
+          this.previewBlockedSince = null
+          this.nextPreviewAllowedAt = attemptedAt.getTime() + this.previewCooldownMs
+        } else {
+          const blockedForMs = this.previewBlockedSince === null ? 0 : attemptedAt.getTime() - this.previewBlockedSince
+          if (blockedForMs >= this.previewParkAfterMs) {
+            parked = true
+            this.nextPreviewAllowedAt = attemptedAt.getTime() + this.previewParkDurationMs
+          } else {
+            const backoff = Math.min(this.previewCooldownMs * 2 ** (this.previewFailures - 1), 60 * 60 * 1000)
+            this.nextPreviewAllowedAt = attemptedAt.getTime() + Math.max(this.withJitter(backoff), result.retryAfterMs ?? 0)
+          }
+        }
       } else {
-        const backoff = Math.min(this.previewCooldownMs * 2 ** (this.previewFailures - 1), 60 * 60 * 1000)
-        this.nextPreviewAllowedAt = attemptedAt.getTime() + Math.max(this.withJitter(backoff), result.retryAfterMs ?? 0)
+        const blockedForMs = this.previewBlockedSince === null ? 0 : attemptedAt.getTime() - this.previewBlockedSince
+        if (result.kind === 'blocked' && blockedForMs >= this.previewParkAfterMs) {
+          parked = true
+          this.nextPreviewAllowedAt = attemptedAt.getTime() + this.previewParkDurationMs
+        } else {
+          const backoff = Math.min(this.previewCooldownMs * 2 ** (this.previewFailures - 1), 60 * 60 * 1000)
+          this.nextPreviewAllowedAt = attemptedAt.getTime() + Math.max(this.withJitter(backoff), result.retryAfterMs ?? 0)
+        }
       }
     }
     const nextAttempt = new Date(this.nextPreviewAllowedAt).toISOString()

@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { AppStatus } from '../domain/types.js'
 import type { SessionSnapshot } from '../domain/types.js'
 import { AlertDialog } from './components/AlertDialog.js'
+import { CfClearancePanel } from './components/CfClearancePanel.js'
 import { FiltersPanel } from './components/FiltersPanel.js'
 import { SessionCard } from './components/SessionCard.js'
 import { SessionDetail } from './components/SessionDetail.js'
@@ -238,6 +239,9 @@ export function App() {
               {status?.seatCapture.detail} Last-known exact seats remain visible where available.
             </div>
           )
+          : null}
+        {!status?.sampleData && (seatCaptureState === 'blocked' || lumosBootstrapState === 'blocked')
+          ? <CfClearancePanel sampleData={false} seatBlocked={true} />
           : null}
         {!status?.sampleData && discoveryState === 'ok' && seatCaptureState === 'partial'
           ? (
